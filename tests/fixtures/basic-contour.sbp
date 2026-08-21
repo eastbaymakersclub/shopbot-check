@@ -1,0 +1,20 @@
+' Synthetic ShopBot Check fixture — safe contour
+' ROUTER FILE IN INCHES
+' Length of material in X = 24.000
+' Length of material in Y = 12.000
+' Depth of material in Z = 0.700
+' Tool Name = Compression End Mill (1/2")
+SA
+TR,18000
+C6
+MS,4.5,0.5
+JZ,0.25
+J2,1,1
+M3,1,1,-0.25
+M3,10,1,-0.25
+M3,10,6,-0.25
+M3,1,6,-0.25
+M3,1,1,-0.25
+JZ,0.25
+C7
+END

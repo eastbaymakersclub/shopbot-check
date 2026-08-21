@@ -1,0 +1,693 @@
+export type Units = "in" | "mm";
+export type ZOrigin = "top" | "table";
+export type Severity = "error" | "warning" | "info" | "pass";
+export type IssueCategory = "bounds" | "setup" | "tooling" | "cut-load" | "parser";
+
+export interface AxisLimit { min: number; max: number }
+
+export interface MachineProfile {
+  id: string;
+  name: string;
+  units: Units;
+  limits: { x: AxisLimit; y: AxisLimit; z: AxisLimit };
+  moveSpeed: { xy: number; z: number };
+  jogSpeed: { xy: number; z: number };
+  spindle: { minRpm: number; maxRpm: number };
+}
+
+export interface CutterPreset {
+  id: string;
+  name: string;
+  diameter: number;
+  flutes: number;
+  geometry: "compression" | "flat" | "ball-nose";
+  chipLoad: { min: number; max: number };
+  observed?: { rpm: number; feedIpm: number; plungeIpm: number };
+  source: string;
+}
+
+export interface StockConfig {
+  material: string;
+  thickness: number;
+  width: number;
+  height: number;
+  zOrigin: ZOrigin;
+  chipLoadFactor: number;
+}
+
+export interface AnalysisConfig {
+  machine: MachineProfile;
+  stock: StockConfig;
+  cutter: CutterPreset;
+  workOffset: { x: number; y: number };
+  spoilboardAllowance: number;
+}
+
+export interface Point3 { x: number; y: number; z: number }
+
+export interface ToolpathSegment {
+  from: Point3;
+  to: Point3;
+  kind: "move" | "jog";
+  arc: boolean;
+  engaged: boolean;
+  line: number;
+  feedIps: number;
+  plungeIps: number;
+  rpm: number | null;
+}
+
+export interface AnalysisIssue {
+  id: string;
+  severity: Severity;
+  category: IssueCategory;
+  title: string;
+  detail: string;
+  recommendation?: string;
+  line?: number;
+  source?: string;
+}
+
+export interface ProgramBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  minZ: number;
+  maxZ: number;
+}
+
+export interface ProgramMetadata {
+  units: Units;
+  unitsSource: "header" | "unit-guard" | "machine-default";
+  materialThickness: number | null;
+  materialWidth: number | null;
+  materialHeight: number | null;
+  safeZ: number | null;
+  zOrigin: ZOrigin;
+  toolName: string | null;
+  toolDiameter: number | null;
+  toolNumber: number | null;
+}
+
+export interface AnalysisResult {
+  filename: string;
+  complete: boolean;
+  score: number;
+  lineCount: number;
+  commandCount: number;
+  unknownCommands: string[];
+  segments: ToolpathSegment[];
+  bounds: ProgramBounds;
+  cutBounds: ProgramBounds | null;
+  metadata: ProgramMetadata;
+  effectiveStock: StockConfig;
+  issues: AnalysisIssue[];
+  stats: {
+    moveCount: number;
+    jogCount: number;
+    arcCount: number;
+    engagedMoveCount: number;
+    estimatedSeconds: number;
+    rpm: number | null;
+    maxFeedIpm: number | null;
+    maxPlungeIpm: number | null;
+    chipLoad: number | null;
+    adjustedChipLoadRange: { min: number; max: number } | null;
+    maxPassDepth: number;
+    maximumDepth: number;
+  };
+  zeroRange: {
+    x: AxisLimit;
+    y: AxisLimit;
+    recommendedStockInset: { x: number; y: number };
+  };
+}
+
+const MAX_LINES = 500_000;
+const EPSILON = 1e-7;
+const GLOBAL_SETTING_COMMANDS = new Set(["VL", "VU", "VI", "VN", "VA", "ST", "VO", "VD"]);
+const KNOWN_COMMANDS = new Set(["SA", "CN", "C6", "C7", "C9", "TR", "MS", "PAUSE", "JZ", "J2", "J3", "M2", "M3", "CG", "END", "SF"]);
+
+function issue(
+  severity: Severity,
+  category: IssueCategory,
+  id: string,
+  title: string,
+  detail: string,
+  extra: Partial<AnalysisIssue> = {},
+): AnalysisIssue {
+  return { id, severity, category, title, detail, ...extra };
+}
+
+function stripComment(line: string): string {
+  const index = line.indexOf("'");
+  return (index >= 0 ? line.slice(0, index) : line).trim();
+}
+
+function parseFraction(value: string): number | null {
+  const fraction = value.match(/(\d+)\s*\/\s*(\d+)/);
+  if (fraction) {
+    const denominator = Number(fraction[2]);
+    return denominator ? Number(fraction[1]) / denominator : null;
+  }
+  const numeric = Number.parseFloat(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function detectUnits(text: string): { units: Units; source: ProgramMetadata["unitsSource"] } | null {
+  if (/UNITS\s*:\s*INCHES|ROUTER FILE IN INCHES/i.test(text)) return { units: "in", source: "header" };
+  if (/UNITS\s*:\s*(?:MM|MILLIMETERS)|ROUTER FILE IN (?:MM|MILLIMETERS)/i.test(text)) return { units: "mm", source: "header" };
+  if (/IF\s+%\(25\)\s*=\s*1\s+THEN\s+GOTO\s+UNIT_ERROR/i.test(text)) return { units: "in", source: "unit-guard" };
+  if (/IF\s+%\(25\)\s*=\s*0\s+THEN\s+GOTO\s+UNIT_ERROR/i.test(text)) return { units: "mm", source: "unit-guard" };
+  return null;
+}
+
+function firstNumber(text: string, pattern: RegExp): number | null {
+  const match = text.match(pattern);
+  if (!match) return null;
+  const value = Number.parseFloat(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata {
+  const unitsDetection = detectUnits(text);
+  const units = unitsDetection?.units ?? config.machine.units;
+  const unitScale = units === "mm" ? 1 / 25.4 : 1;
+  const rawToolName = text.match(/^\s*'\s*Tool Name\s*=\s*(.+)$/im)?.[1]?.trim() ?? null;
+  const toolDiameterText = rawToolName?.match(/(\d+\s*\/\s*\d+|\d*\.?\d+)\s*["″]/)?.[1];
+  const rawOrigin = text.match(/^\s*&PWZorigin\s*=\s*([^\r\n']+)/im)?.[1]?.trim() ?? "";
+  const isTableOrigin = /table|bed/i.test(rawOrigin);
+  const toolNumber = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im);
+  const thickness = firstNumber(text, /^\s*&PWMaterial\s*=\s*(-?\d+(?:\.\d+)?)/im)
+    ?? firstNumber(text, /Depth of material in Z\s*=\s*(-?\d+(?:\.\d+)?)/i);
+  const width = firstNumber(text, /Length of material in X\s*=\s*(-?\d+(?:\.\d+)?)/i);
+  const height = firstNumber(text, /Length of material in Y\s*=\s*(-?\d+(?:\.\d+)?)/i);
+  const safeZ = firstNumber(text, /^\s*&PWSafeZ\s*=\s*(-?\d+(?:\.\d+)?)/im)
+    ?? firstNumber(text, /Safe Z\s*=\s*(-?\d+(?:\.\d+)?)/i);
+
+  return {
+    units,
+    unitsSource: unitsDetection?.source ?? "machine-default",
+    materialThickness: thickness === null ? null : thickness * unitScale,
+    materialWidth: width === null ? null : width * unitScale,
+    materialHeight: height === null ? null : height * unitScale,
+    safeZ: safeZ === null ? null : safeZ * unitScale,
+    zOrigin: isTableOrigin ? "table" : "top",
+    toolName: rawToolName,
+    toolDiameter: toolDiameterText ? parseFraction(toolDiameterText) : null,
+    toolNumber: toolNumber === null ? null : Math.round(toolNumber),
+  };
+}
+
+function emptyBounds(): ProgramBounds {
+  return { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
+}
+
+function addPoint(bounds: ProgramBounds, point: Point3): void {
+  bounds.minX = Math.min(bounds.minX, point.x);
+  bounds.maxX = Math.max(bounds.maxX, point.x);
+  bounds.minY = Math.min(bounds.minY, point.y);
+  bounds.maxY = Math.max(bounds.maxY, point.y);
+  bounds.minZ = Math.min(bounds.minZ, point.z);
+  bounds.maxZ = Math.max(bounds.maxZ, point.z);
+}
+
+function finiteBounds(bounds: ProgramBounds): ProgramBounds {
+  if (!Number.isFinite(bounds.minX)) return { minX: 0, maxX: 0, minY: 0, maxY: 0, minZ: 0, maxZ: 0 };
+  return bounds;
+}
+
+function distance(from: Point3, to: Point3): number {
+  return Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
+}
+
+function numberArg(value: string | undefined, scale: number, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed * scale : Number.NaN;
+}
+
+function severityWeight(severity: Severity): number {
+  if (severity === "error") return 25;
+  if (severity === "warning") return 8;
+  if (severity === "info") return 2;
+  return 0;
+}
+
+function severityOrder(severity: Severity): number {
+  return { error: 0, warning: 1, info: 2, pass: 3 }[severity];
+}
+
+function formatInches(value: number): string {
+  return `${value.toFixed(Math.abs(value) < 10 ? 2 : 1)}″`;
+}
+
+export function analyzeProgram(filename: string, text: string, config: AnalysisConfig): AnalysisResult {
+  const sourceLines = text.replace(/\r\n?/g, "\n").split("\n");
+  if (sourceLines.length > MAX_LINES) throw new Error(`Files over ${MAX_LINES.toLocaleString()} lines are not supported yet.`);
+
+  const metadata = extractMetadata(text, config);
+  const scale = metadata.units === "mm" ? 1 / 25.4 : 1;
+  const effectiveStock: StockConfig = {
+    ...config.stock,
+    thickness: metadata.materialThickness ?? config.stock.thickness,
+    width: metadata.materialWidth ?? config.stock.width,
+    height: metadata.materialHeight ?? config.stock.height,
+    zOrigin: metadata.zOrigin,
+  };
+  const stockSurface = effectiveStock.zOrigin === "top" ? 0 : effectiveStock.thickness;
+  const stockBottom = effectiveStock.zOrigin === "top" ? -effectiveStock.thickness : 0;
+
+  const segments: ToolpathSegment[] = [];
+  const issues: AnalysisIssue[] = [];
+  const unknown = new Set<string>();
+  const programBounds = emptyBounds();
+  const cuttingBounds = emptyBounds();
+  const variables = new Map<string, string | number>();
+  let position: Point3 = { x: 0, y: 0, z: 0 };
+  let moveFeed = config.machine.moveSpeed.xy;
+  let plungeFeed = config.machine.moveSpeed.z;
+  let rpm: number | null = null;
+  let spindleRunning = false;
+  let spindleStarted = false;
+  let spindleStopped = false;
+  let sawAbsolute = false;
+  let sawMoveSpeed = false;
+  let commandCount = 0;
+  let moveCount = 0;
+  let jogCount = 0;
+  let arcCount = 0;
+  let estimatedSeconds = 0;
+  let rapidBelowSurfaceCount = 0;
+  let firstRapidBelowSurface: { line: number; source: string } | null = null;
+  let firstCutWithoutSpindle: { line: number; source: string } | null = null;
+  let maxPassDepth = 0;
+  let maxPlungeIps = 0;
+
+  const addSegment = (
+    from: Point3,
+    to: Point3,
+    kind: "move" | "jog",
+    line: number,
+    source: string,
+    arc = false,
+  ) => {
+    if (![from.x, from.y, from.z, to.x, to.y, to.z].every(Number.isFinite)) {
+      unknown.add(`unresolved coordinate at line ${line}`);
+      return;
+    }
+    const horizontalDistance = Math.hypot(to.x - from.x, to.y - from.y);
+    const engaged = Math.min(from.z, to.z) < stockSurface - EPSILON;
+    const feedIps = kind === "move" ? moveFeed : config.machine.jogSpeed.xy;
+    const zFeedIps = kind === "move" ? plungeFeed : config.machine.jogSpeed.z;
+    const durationFeed = horizontalDistance > EPSILON ? feedIps : zFeedIps;
+    estimatedSeconds += durationFeed > EPSILON ? distance(from, to) / durationFeed : 0;
+    const segment: ToolpathSegment = {
+      from: { ...from }, to: { ...to }, kind, arc, engaged, line, feedIps, plungeIps: zFeedIps, rpm,
+    };
+    segments.push(segment);
+    addPoint(programBounds, from);
+    addPoint(programBounds, to);
+    if (engaged && kind === "move") {
+      addPoint(cuttingBounds, from);
+      addPoint(cuttingBounds, to);
+      if (!spindleRunning && !firstCutWithoutSpindle) firstCutWithoutSpindle = { line, source: source.trim() };
+      if (to.z < from.z - EPSILON) {
+        const startDepth = Math.max(0, stockSurface - from.z);
+        const endDepth = Math.max(0, stockSurface - to.z);
+        maxPassDepth = Math.max(maxPassDepth, endDepth - startDepth);
+        maxPlungeIps = Math.max(maxPlungeIps, zFeedIps);
+      }
+    }
+    const jogEntersMaterial = kind === "jog" && engaged
+      && (horizontalDistance > EPSILON || to.z < from.z - EPSILON);
+    if (jogEntersMaterial) {
+      rapidBelowSurfaceCount += 1;
+      if (!firstRapidBelowSurface) firstRapidBelowSurface = { line, source: source.trim() };
+    }
+    if (kind === "move") moveCount += 1;
+    else jogCount += 1;
+  };
+
+  let mainProgramEnded = false;
+  for (let index = 0; index < sourceLines.length; index += 1) {
+    const rawLine = sourceLines[index];
+    const lineNumber = index + 1;
+    const code = stripComment(rawLine);
+    if (!code || mainProgramEnded) continue;
+
+    if (/^[A-Za-z_][A-Za-z0-9_]*:$/.test(code)) continue;
+    if (/^IF\s+/i.test(code)) {
+      commandCount += 1;
+      if (!/^IF\s+%\(25\)\s*=\s*[01]\s+THEN\s+GOTO\s+UNIT_ERROR$/i.test(code)) unknown.add("IF/GOTO");
+      continue;
+    }
+    if (code.startsWith("&")) {
+      const assignment = code.match(/^(&[A-Za-z0-9_]+)\s*=\s*(.+)$/);
+      if (assignment) {
+        const numeric = Number.parseFloat(assignment[2]);
+        variables.set(assignment[1].toLowerCase(), Number.isFinite(numeric) ? numeric : assignment[2].trim());
+      } else {
+        unknown.add("variable expression");
+      }
+      continue;
+    }
+
+    const command = code.split(/[\s,]+/, 1)[0].toUpperCase();
+    const args = code.split(",").slice(1).map((value) => value.trim());
+    commandCount += 1;
+
+    if (command === "END") {
+      mainProgramEnded = true;
+      continue;
+    }
+    if (command === "SA") {
+      sawAbsolute = true;
+      continue;
+    }
+    if (command === "CN") {
+      const customNumber = Number.parseInt(args[0] ?? "", 10);
+      if (![90, 91].includes(customNumber)) unknown.add(`CN ${Number.isFinite(customNumber) ? customNumber : "?"}`);
+      continue;
+    }
+    if (command === "C6") {
+      spindleRunning = true;
+      spindleStarted = true;
+      continue;
+    }
+    if (command === "C7") {
+      spindleRunning = false;
+      spindleStopped = true;
+      continue;
+    }
+    if (command === "C9") continue;
+    if (command === "TR") {
+      const parsed = Number.parseFloat(args[0] ?? "");
+      if (Number.isFinite(parsed)) rpm = parsed;
+      else unknown.add("TR expression");
+      continue;
+    }
+    if (command === "MS") {
+      const xy = Number.parseFloat(args[0] ?? "");
+      const z = Number.parseFloat(args[1] ?? "");
+      if (Number.isFinite(xy)) moveFeed = xy * scale;
+      else unknown.add("MS expression");
+      if (Number.isFinite(z)) plungeFeed = z * scale;
+      sawMoveSpeed = true;
+      continue;
+    }
+    if (command === "PAUSE") continue;
+    if (command === "SF") {
+      const enabled = Number.parseInt(args[0] ?? "", 10);
+      if (enabled === 0) {
+        issues.push(issue("error", "setup", "limit-check-disabled", "File disables machine limit checking", "SF,0 turns off ShopBot’s software move-limit check during the program.", {
+          line: lineNumber, source: rawLine.trim(), recommendation: "Remove SF,0 and keep limit checking enabled.",
+        }));
+      }
+      continue;
+    }
+    if (GLOBAL_SETTING_COMMANDS.has(command)) {
+      issues.push(issue("warning", "setup", `global-${command.toLowerCase()}-${lineNumber}`, `${command} changes machine-wide setup`, "This command changes calibration, limits, inputs, units, or the coordinate base and is not expected in an ordinary part file.", {
+        line: lineNumber, source: rawLine.trim(), recommendation: "Verify this command against the machine backup before running the file.",
+      }));
+      unknown.add(command);
+      continue;
+    }
+    if (["SR", "VS", "JS", "VR"].includes(command)) {
+      unknown.add(command);
+      continue;
+    }
+
+    const from = { ...position };
+    if (command === "JZ") {
+      position = { ...position, z: numberArg(args[0], scale, position.z) };
+      addSegment(from, position, "jog", lineNumber, rawLine);
+      continue;
+    }
+    if (command === "J2" || command === "M2") {
+      position = {
+        ...position,
+        x: numberArg(args[0], scale, position.x),
+        y: numberArg(args[1], scale, position.y),
+      };
+      addSegment(from, position, command === "J2" ? "jog" : "move", lineNumber, rawLine);
+      continue;
+    }
+    if (command === "J3" || command === "M3") {
+      position = {
+        x: numberArg(args[0], scale, position.x),
+        y: numberArg(args[1], scale, position.y),
+        z: numberArg(args[2], scale, position.z),
+      };
+      addSegment(from, position, command === "J3" ? "jog" : "move", lineNumber, rawLine);
+      continue;
+    }
+    if (command === "CG") {
+      const end: Point3 = {
+        x: numberArg(args[1], scale, position.x),
+        y: numberArg(args[2], scale, position.y),
+        z: position.z,
+      };
+      const offsetX = numberArg(args[3], scale, Number.NaN);
+      const offsetY = numberArg(args[4], scale, Number.NaN);
+      const direction = Number.parseFloat(args[6] || args[7] || "1");
+      if (![end.x, end.y, offsetX, offsetY].every(Number.isFinite)) {
+        unknown.add(`CG expression at line ${lineNumber}`);
+        continue;
+      }
+      const center = { x: position.x + offsetX, y: position.y + offsetY };
+      const radius = Math.hypot(position.x - center.x, position.y - center.y);
+      const startAngle = Math.atan2(position.y - center.y, position.x - center.x);
+      const endAngle = Math.atan2(end.y - center.y, end.x - center.x);
+      let sweep = endAngle - startAngle;
+      if (direction < 0) {
+        while (sweep <= EPSILON) sweep += Math.PI * 2;
+      } else {
+        while (sweep >= -EPSILON) sweep -= Math.PI * 2;
+      }
+      const steps = Math.max(4, Math.min(96, Math.ceil(Math.abs(sweep) / (Math.PI / 24))));
+      let arcPosition = { ...position };
+      for (let step = 1; step <= steps; step += 1) {
+        const angle = startAngle + sweep * (step / steps);
+        const next = step === steps ? end : { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius, z: position.z };
+        addSegment(arcPosition, next, "move", lineNumber, rawLine, true);
+        arcPosition = { ...next };
+      }
+      position = end;
+      arcCount += 1;
+      continue;
+    }
+
+    if (!KNOWN_COMMANDS.has(command)) unknown.add(command || `line ${lineNumber}`);
+  }
+
+  const bounds = finiteBounds(programBounds);
+  const cutBounds = Number.isFinite(cuttingBounds.minX) ? finiteBounds(cuttingBounds) : null;
+  const cutterDiameter = metadata.toolDiameter ?? config.cutter.diameter;
+  const cutterRadius = cutterDiameter / 2;
+  const zeroRange = {
+    x: { min: config.machine.limits.x.min - bounds.minX, max: config.machine.limits.x.max - bounds.maxX },
+    y: { min: config.machine.limits.y.min - bounds.minY, max: config.machine.limits.y.max - bounds.maxY },
+    recommendedStockInset: {
+      x: Math.max(0, cutterRadius - (cutBounds?.minX ?? bounds.minX)),
+      y: Math.max(0, cutterRadius - (cutBounds?.minY ?? bounds.minY)),
+    },
+  };
+
+  if (metadata.unitsSource === "machine-default") {
+    issues.push(issue("warning", "setup", "units-inferred", "File units are not declared", `Coordinates were interpreted as ${metadata.units === "in" ? "inches" : "millimeters"} from the machine profile.`, {
+      recommendation: "Add a standard unit guard or unit header to the postprocessor output.",
+    }));
+  }
+  if (!sawAbsolute) {
+    issues.push(issue("error", "setup", "absolute-mode-missing", "Absolute coordinate mode is not established", "The statically analyzable profile requires SA before movement begins.", {
+      recommendation: "Add SA near the beginning of the part file.",
+    }));
+  }
+  if (!sawMoveSpeed) {
+    issues.push(issue("warning", "cut-load", "move-speed-missing", "No MS feed setting was found", "The file relies on the ShopBot console’s existing move speeds.", {
+      recommendation: "Set an explicit XY and Z move speed in the file.",
+    }));
+  }
+  if (rpm === null) {
+    issues.push(issue("warning", "cut-load", "rpm-missing", "No spindle RPM was found", "Chip load cannot be checked without a TR spindle-speed command.", {
+      recommendation: "Add TR or enter the intended spindle speed before relying on feed analysis.",
+    }));
+  } else if (rpm < config.machine.spindle.minRpm || rpm > config.machine.spindle.maxRpm) {
+    issues.push(issue("error", "cut-load", "rpm-range", "Spindle RPM is outside the configured range", `${rpm.toLocaleString()} RPM is outside ${config.machine.spindle.minRpm.toLocaleString()}–${config.machine.spindle.maxRpm.toLocaleString()} RPM.`, {
+      recommendation: "Correct TR or verify the spindle’s rated range.",
+    }));
+  }
+  if (firstCutWithoutSpindle) {
+    issues.push(issue("error", "setup", "cut-without-spindle", "A cutting move occurs before spindle-on", "An engaged M move was found before the C6 spindle-on macro.", {
+      line: firstCutWithoutSpindle.line, source: firstCutWithoutSpindle.source, recommendation: "Start the spindle and allow it to reach speed before plunging.",
+    }));
+  }
+  if (spindleStarted && !spindleStopped) {
+    issues.push(issue("warning", "setup", "spindle-not-stopped", "The file does not stop the spindle", "C6 starts the spindle, but no C7 spindle-off macro was found before END.", {
+      recommendation: "Add C7 before the program ends.",
+    }));
+  }
+  if (rapidBelowSurfaceCount > 0 && firstRapidBelowSurface) {
+    issues.push(issue("error", "bounds", "rapid-in-stock", `${rapidBelowSurfaceCount} jog ${rapidBelowSurfaceCount === 1 ? "move enters" : "moves enter"} the stock`, "J moves use rapid speed and should remain above the modeled stock surface.", {
+      line: firstRapidBelowSurface.line, source: firstRapidBelowSurface.source, recommendation: "Raise to a verified safe Z before repositioning.",
+    }));
+  }
+
+  const machineMinX = bounds.minX + config.workOffset.x;
+  const machineMaxX = bounds.maxX + config.workOffset.x;
+  const machineMinY = bounds.minY + config.workOffset.y;
+  const machineMaxY = bounds.maxY + config.workOffset.y;
+  const outsideX = machineMinX < config.machine.limits.x.min - EPSILON || machineMaxX > config.machine.limits.x.max + EPSILON;
+  const outsideY = machineMinY < config.machine.limits.y.min - EPSILON || machineMaxY > config.machine.limits.y.max + EPSILON;
+  if (zeroRange.x.min > zeroRange.x.max || zeroRange.y.min > zeroRange.y.max) {
+    issues.push(issue("error", "bounds", "path-too-large", "Toolpath is larger than the machine envelope", "No XY zero position can place every movement inside the configured machine limits."));
+  } else if (outsideX || outsideY) {
+    issues.push(issue("error", "bounds", "current-zero-outside", "Current XY zero placement exceeds machine limits", `With X zero at ${formatInches(config.workOffset.x)} and Y zero at ${formatInches(config.workOffset.y)}, movement reaches ${formatInches(machineMinX)}…${formatInches(machineMaxX)} X and ${formatInches(machineMinY)}…${formatInches(machineMaxY)} Y.`, {
+      recommendation: `Place X zero between ${formatInches(zeroRange.x.min)} and ${formatInches(zeroRange.x.max)}, and Y zero between ${formatInches(zeroRange.y.min)} and ${formatInches(zeroRange.y.max)} in table-base coordinates.`,
+    }));
+  }
+  if (bounds.minX < -EPSILON || bounds.minY < -EPSILON) {
+    issues.push(issue("warning", "bounds", "negative-coordinates", "Toolpath contains negative XY coordinates", `The cutter center reaches X ${formatInches(bounds.minX)} and Y ${formatInches(bounds.minY)} relative to the working zero.`, {
+      recommendation: `For a lower-left stock origin, inset the zero by at least X ${formatInches(zeroRange.recommendedStockInset.x)} and Y ${formatInches(zeroRange.recommendedStockInset.y)} to include cutter radius.`,
+    }));
+  }
+  if (cutBounds) {
+    const stockOutside = cutBounds.minX - cutterRadius < -EPSILON
+      || cutBounds.minY - cutterRadius < -EPSILON
+      || cutBounds.maxX + cutterRadius > effectiveStock.width + EPSILON
+      || cutBounds.maxY + cutterRadius > effectiveStock.height + EPSILON;
+    if (stockOutside) {
+      issues.push(issue("warning", "bounds", "stock-envelope", "Cutting edge extends outside the modeled stock", `The ${formatInches(cutterDiameter)} cutter envelope is larger than the ${formatInches(effectiveStock.width)} × ${formatInches(effectiveStock.height)} stock model at the current origin.`, {
+        recommendation: "Confirm the intended stock origin and dimensions before running.",
+      }));
+    }
+  }
+  const zTravel = bounds.maxZ - bounds.minZ;
+  const machineZTravel = config.machine.limits.z.max - config.machine.limits.z.min;
+  if (zTravel > machineZTravel + EPSILON) {
+    issues.push(issue("error", "bounds", "z-travel", "Programmed Z travel exceeds machine capacity", `${formatInches(zTravel)} of programmed Z motion exceeds the configured ${formatInches(machineZTravel)} span.`));
+  }
+  const tableBaseMinZ = effectiveStock.zOrigin === "top" ? bounds.minZ + effectiveStock.thickness : bounds.minZ;
+  const tableBaseMaxZ = effectiveStock.zOrigin === "top" ? bounds.maxZ + effectiveStock.thickness : bounds.maxZ;
+  if (tableBaseMinZ < config.machine.limits.z.min - EPSILON || tableBaseMaxZ > config.machine.limits.z.max + EPSILON) {
+    issues.push(issue("error", "bounds", "z-envelope", "Programmed Z position exceeds machine limits", `With ${effectiveStock.zOrigin === "top" ? "stock-surface" : "table-surface"} Z zero, movement maps to table-base Z ${formatInches(tableBaseMinZ)}…${formatInches(tableBaseMaxZ)}.`, {
+      recommendation: "Confirm stock thickness and the Z-zero convention before running the file.",
+    }));
+  }
+  if (bounds.minZ < stockBottom - config.spoilboardAllowance - EPSILON) {
+    const overcut = stockBottom - bounds.minZ;
+    issues.push(issue(overcut > 0.25 ? "error" : "warning", "bounds", "spoilboard-depth", "Cut extends beneath the allowed stock depth", `The lowest Z is ${formatInches(overcut)} below the modeled stock bottom; allowance is ${formatInches(config.spoilboardAllowance)}.`, {
+      recommendation: "Confirm stock thickness, Z-zero convention, and intended spoilboard cut-through.",
+    }));
+  }
+
+  if (!metadata.toolName) {
+    issues.push(issue("warning", "tooling", "tool-unidentified", `Confirm Tool ${metadata.toolNumber ?? "selection"}`, `The file does not identify cutter geometry; analysis is using ${config.cutter.name}.`, {
+      recommendation: "Select the cutter actually installed before relying on load or cutter-envelope checks.",
+    }));
+  } else if (metadata.toolDiameter && Math.abs(metadata.toolDiameter - config.cutter.diameter) > 0.001) {
+    issues.push(issue("info", "tooling", "tool-auto-detected", "Cutter diameter detected from file", `${metadata.toolName} overrides the selected preset’s diameter for bounds and depth checks.`));
+  }
+
+  const engagedHorizontal = segments.filter((segment) => segment.kind === "move" && segment.engaged && Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y) > EPSILON);
+  const maxFeedIps = engagedHorizontal.length ? Math.max(...engagedHorizontal.map((segment) => segment.feedIps)) : null;
+  const maximumDepth = Math.max(0, stockSurface - bounds.minZ);
+  const passRatio = cutterDiameter > EPSILON ? maxPassDepth / cutterDiameter : 0;
+  const depthModifier = passRatio <= 1 ? 1 : passRatio >= 3 ? 0.5 : 1 - (passRatio - 1) * 0.25;
+  const adjustedRange = {
+    min: config.cutter.chipLoad.min * effectiveStock.chipLoadFactor * depthModifier,
+    max: config.cutter.chipLoad.max * effectiveStock.chipLoadFactor * depthModifier,
+  };
+  const chipLoadSamples = engagedHorizontal
+    .filter((segment) => segment.rpm && segment.rpm > 0 && config.cutter.flutes > 0)
+    .map((segment) => ({
+      chipLoad: segment.feedIps * 60 / ((segment.rpm as number) * config.cutter.flutes),
+      rpm: segment.rpm as number,
+    }));
+  const maxChipLoadSample = chipLoadSamples.reduce<(typeof chipLoadSamples)[number] | null>(
+    (maximum, sample) => !maximum || sample.chipLoad > maximum.chipLoad ? sample : maximum,
+    null,
+  );
+  const maxChipLoad = maxChipLoadSample?.chipLoad ?? null;
+  const targetFeedRange = maxChipLoadSample ? {
+    min: adjustedRange.min * maxChipLoadSample.rpm * config.cutter.flutes,
+    max: adjustedRange.max * maxChipLoadSample.rpm * config.cutter.flutes,
+  } : null;
+  const targetFeedText = targetFeedRange
+    ? `A calculated starting band is ${Math.round(targetFeedRange.min)}–${Math.round(targetFeedRange.max)} ipm at ${maxChipLoadSample?.rpm.toLocaleString()} RPM.`
+    : "";
+
+  if (maxChipLoad !== null) {
+    if (maxChipLoad > adjustedRange.max * 1.15) {
+      issues.push(issue("error", "cut-load", "chip-load-high", "Calculated chip load is above the starting range", `${maxChipLoad.toFixed(4)}″/tooth exceeds the adjusted ${adjustedRange.min.toFixed(4)}–${adjustedRange.max.toFixed(4)}″/tooth range.`, {
+        recommendation: `${targetFeedText} Reduce feed, reduce pass depth, increase RPM within the cutter’s rating, or use manufacturer guidance.`,
+      }));
+    } else if (maxChipLoad < adjustedRange.min * 0.55) {
+      issues.push(issue("warning", "cut-load", "chip-load-low", "Calculated chip load is very low", `${maxChipLoad.toFixed(4)}″/tooth is below the adjusted ${adjustedRange.min.toFixed(4)}–${adjustedRange.max.toFixed(4)}″/tooth starting range and may create heat or rubbing.`, {
+        recommendation: `${targetFeedText} Confirm the cutter, then consider increasing feed or reducing RPM.`,
+      }));
+    } else {
+      issues.push(issue("pass", "cut-load", "chip-load-pass", "Chip load is within the starting range", `${maxChipLoad.toFixed(4)}″/tooth falls within the depth-adjusted starting band.`));
+    }
+  }
+  if (passRatio > 3) {
+    issues.push(issue("error", "cut-load", "pass-depth-extreme", "Pass depth exceeds three cutter diameters", `${formatInches(maxPassDepth)} is ${passRatio.toFixed(1)}× the modeled cutter diameter.`, {
+      recommendation: `Start with passes no deeper than ${formatInches(cutterDiameter)} unless the cutter manufacturer allows more, then recalculate chip load.`,
+    }));
+  } else if (passRatio > 1) {
+    issues.push(issue("warning", "cut-load", "pass-depth-deep", "Pass depth exceeds one cutter diameter", `${formatInches(maxPassDepth)} is ${passRatio.toFixed(1)}× the modeled cutter diameter; the chip-load range was reduced accordingly.`, {
+      recommendation: `Start with passes no deeper than ${formatInches(cutterDiameter)} unless the cutter manufacturer allows more.`,
+    }));
+  }
+  if (maxFeedIps && maxPlungeIps > Math.max(1, maxFeedIps * 0.55)) {
+    issues.push(issue("warning", "cut-load", "plunge-fast", "Plunge speed is high relative to cutting feed", `${(maxPlungeIps * 60).toFixed(0)} ipm plunge is more than half the maximum cutting feed.`, {
+      recommendation: `As a conservative heuristic, consider ${Math.round(maxFeedIps * 60 * 0.35)} ipm or less for plunges unless the cutter manufacturer specifies otherwise.`,
+    }));
+  }
+
+  const unknownCommands = [...unknown].sort();
+  if (unknownCommands.length) {
+    issues.push(issue("error", "parser", "unsupported-commands", "Analysis is incomplete", `Unsupported or unresolved constructs: ${unknownCommands.join(", ")}.`, {
+      recommendation: "Review these lines manually; this file cannot receive a complete static-analysis result.",
+    }));
+  } else {
+    issues.push(issue("pass", "parser", "static-complete", "All commands were statically resolved", `${commandCount.toLocaleString()} commands fit the supported sample-driven OpenSBP profile.`));
+  }
+  if (!rapidBelowSurfaceCount) issues.push(issue("pass", "bounds", "rapid-clear", "Jog moves stay above the stock", "No rapid positioning move entered the modeled material."));
+  if (spindleStarted && spindleStopped && !firstCutWithoutSpindle) issues.push(issue("pass", "setup", "spindle-sequence", "Spindle sequence is complete", "The spindle starts before engaged moves and stops before the program ends."));
+
+  issues.sort((a, b) => severityOrder(a.severity) - severityOrder(b.severity));
+  const score = Math.max(0, 100 - issues.reduce((sum, item) => sum + severityWeight(item.severity), 0));
+
+  return {
+    filename,
+    complete: unknownCommands.length === 0,
+    score,
+    lineCount: sourceLines.length,
+    commandCount,
+    unknownCommands,
+    segments,
+    bounds,
+    cutBounds,
+    metadata,
+    effectiveStock,
+    issues,
+    stats: {
+      moveCount,
+      jogCount,
+      arcCount,
+      engagedMoveCount: engagedHorizontal.length,
+      estimatedSeconds,
+      rpm,
+      maxFeedIpm: maxFeedIps === null ? null : maxFeedIps * 60,
+      maxPlungeIpm: maxPlungeIps ? maxPlungeIps * 60 : null,
+      chipLoad: maxChipLoad,
+      adjustedChipLoadRange: rpm === null ? null : adjustedRange,
+      maxPassDepth,
+      maximumDepth,
+    },
+    zeroRange,
+  };
+}

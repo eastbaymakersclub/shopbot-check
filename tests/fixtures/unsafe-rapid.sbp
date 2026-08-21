@@ -1,0 +1,13 @@
+' Synthetic ShopBot Check fixture — rapid below the stock surface
+' ROUTER FILE IN INCHES
+SA
+TR,18000
+C6
+MS,4,0.5
+JZ,0.25
+J2,1,1
+M3,1,1,-0.25
+J2,8,8
+JZ,0.25
+C7
+END

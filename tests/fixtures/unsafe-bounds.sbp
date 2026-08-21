@@ -1,0 +1,13 @@
+' Synthetic ShopBot Check fixture — negative XY coordinates
+' ROUTER FILE IN INCHES
+SA
+TR,18000
+C6
+MS,4,0.5
+JZ,0.25
+J2,-1,-0.75
+M3,-1,-0.75,-0.25
+M3,10,4,-0.25
+JZ,0.25
+C7
+END
