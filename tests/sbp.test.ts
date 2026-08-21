@@ -50,16 +50,22 @@ describe("OpenSBP static analyzer", () => {
 });
 
 const sampleDirectory = process.env.SBP_SAMPLE_DIR;
-describe.skipIf(!sampleDirectory || !existsSync(sampleDirectory))("local sample corpus", () => {
-  const files = readdirSync(sampleDirectory as string).filter((name) => name.toLowerCase().endsWith(".sbp"));
+if (sampleDirectory && existsSync(sampleDirectory)) {
+  describe("local sample corpus", () => {
+    const files = readdirSync(sampleDirectory).filter((name) => name.toLowerCase().endsWith(".sbp"));
 
-  for (const name of files) {
-    it(`parses ${name} without throwing`, () => {
-      const source = readFileSync(path.join(sampleDirectory as string, name), "utf8");
-      const result = analyzeProgram(name, source, DEFAULT_CONFIG);
-      expect(result.segments.length).toBeGreaterThan(0);
-      expect(result.lineCount).toBeGreaterThan(0);
-      expect(result.unknownCommands, `unsupported constructs in ${name}`).toEqual([]);
-    });
-  }
-});
+    for (const name of files) {
+      it(`parses ${name} without throwing`, () => {
+        const source = readFileSync(path.join(sampleDirectory, name), "utf8");
+        const result = analyzeProgram(name, source, DEFAULT_CONFIG);
+        expect(result.segments.length).toBeGreaterThan(0);
+        expect(result.lineCount).toBeGreaterThan(0);
+        expect(result.unknownCommands, `unsupported constructs in ${name}`).toEqual([]);
+      });
+    }
+  });
+} else {
+  describe.skip("local sample corpus", () => {
+    it("runs when SBP_SAMPLE_DIR is provided", () => {});
+  });
+}
