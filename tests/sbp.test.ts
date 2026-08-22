@@ -1,23 +1,45 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEMO_FILENAME, DEMO_SBP } from "../lib/demo";
 import { DEFAULT_CONFIG } from "../lib/presets";
-import { analyzeProgram } from "../lib/sbp";
+import { analyzeProgram, detectToolFromSource } from "../lib/sbp";
 
 function fixture(name: string): string {
   return readFileSync(path.join(import.meta.dirname, "fixtures", name), "utf8");
 }
 
 describe("OpenSBP static analyzer", () => {
-  it("fully analyzes the synthetic demonstration", () => {
-    const result = analyzeProgram(DEMO_FILENAME, DEMO_SBP, DEFAULT_CONFIG);
+  it("fully analyzes the baseline contour fixture", () => {
+    const result = analyzeProgram("basic-contour.sbp", fixture("basic-contour.sbp"), DEFAULT_CONFIG);
 
     expect(result.complete).toBe(true);
-    expect(result.stats.arcCount).toBe(8);
+    expect(result.stats.arcCount).toBe(0);
     expect(result.stats.maxFeedIpm).toBeCloseTo(270);
     expect(result.stats.chipLoad).toBeCloseTo(0.0075);
     expect(result.issues.some((item) => item.id === "rapid-in-stock")).toBe(false);
+  });
+
+  it("detects V-Carve / Vectric tool names and matches their geometry", () => {
+    const detected = detectToolFromSource("' ROUTER FILE IN INCHES\n'Tool Name = Ball Nose (1/8\")\n&Tool = 5");
+    expect(detected).toMatchObject({
+      name: "Ball Nose (1/8\")",
+      diameter: 0.125,
+      number: 5,
+      geometry: "ball-nose",
+      source: "vectric",
+    });
+  });
+
+  it("detects Fusion tool comments emitted by Autodesk's ShopBot post", () => {
+    const detected = detectToolFromSource("' ROUTER FILE IN INCHES\n&Tool = 2\n&ToolName = \"1/2 in Compression 2 Flute\"");
+    expect(detected).toMatchObject({
+      name: "1/2 in Compression 2 Flute",
+      diameter: 0.5,
+      number: 2,
+      geometry: "compression",
+      flutes: 2,
+      source: "fusion",
+    });
   });
 
   it("reports a rapid that enters material", () => {

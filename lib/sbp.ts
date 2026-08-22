@@ -88,6 +88,18 @@ export interface ProgramMetadata {
   toolName: string | null;
   toolDiameter: number | null;
   toolNumber: number | null;
+  toolGeometry: CutterPreset["geometry"] | null;
+  toolFlutes: number | null;
+  toolSource: "vectric" | "fusion" | null;
+}
+
+export interface DetectedTool {
+  name: string | null;
+  diameter: number | null;
+  number: number | null;
+  geometry: CutterPreset["geometry"] | null;
+  flutes: number | null;
+  source: ProgramMetadata["toolSource"];
 }
 
 export interface AnalysisResult {
@@ -155,6 +167,27 @@ function parseFraction(value: string): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function cleanToolName(value: string): string {
+  return value.trim().replace(/^"|"$/g, "").trim();
+}
+
+function toolDiameterInches(name: string, units: Units): number | null {
+  const inchValue = name.match(/(\d+\s*\/\s*\d+|\d*\.?\d+)\s*(?:["″]|\bin(?:ch(?:es)?)?\b)/i)?.[1];
+  if (inchValue) return parseFraction(inchValue);
+  const millimeterValue = name.match(/(\d*\.?\d+)\s*mm\b/i)?.[1];
+  if (millimeterValue) {
+    const parsed = Number.parseFloat(millimeterValue);
+    return Number.isFinite(parsed) ? parsed / 25.4 : null;
+  }
+  const parenthesizedFraction = name.match(/\((\d+\s*\/\s*\d+)\)/)?.[1];
+  if (parenthesizedFraction) return parseFraction(parenthesizedFraction);
+  const unitValue = name.match(/(?:diameter|dia\.?|d)\s*[:=]?\s*(\d*\.?\d+)/i)?.[1];
+  if (!unitValue) return null;
+  const parsed = Number.parseFloat(unitValue);
+  if (!Number.isFinite(parsed)) return null;
+  return units === "mm" ? parsed / 25.4 : parsed;
+}
+
 function detectUnits(text: string): { units: Units; source: ProgramMetadata["unitsSource"] } | null {
   if (/UNITS\s*:\s*INCHES|ROUTER FILE IN INCHES/i.test(text)) return { units: "in", source: "header" };
   if (/UNITS\s*:\s*(?:MM|MILLIMETERS)|ROUTER FILE IN (?:MM|MILLIMETERS)/i.test(text)) return { units: "mm", source: "header" };
@@ -170,12 +203,36 @@ function firstNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+export function detectToolFromSource(text: string): DetectedTool {
+  const units = detectUnits(text)?.units ?? "in";
+  const vectricName = text.match(/^\s*'\s*Tool Name\s*=\s*(.+)$/im)?.[1];
+  const fusionName = text.match(/^\s*&ToolName\s*=\s*(.+)$/im)?.[1];
+  const rawName = vectricName ?? fusionName ?? null;
+  const name = rawName ? cleanToolName(rawName) : null;
+  const normalized = name?.toLowerCase() ?? "";
+  const number = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im);
+  const fluteText = normalized.match(/(\d+)\s*(?:-\s*)?flutes?\b/)?.[1];
+  const flutes = fluteText ? Number.parseInt(fluteText, 10) : null;
+  let geometry: CutterPreset["geometry"] | null = null;
+  if (/ball(?:\s+nose|\s+end)?/.test(normalized)) geometry = "ball-nose";
+  else if (/compression/.test(normalized)) geometry = "compression";
+  else if (/(?:flat|straight|upcut|downcut|end\s*mill)/.test(normalized)) geometry = "flat";
+
+  return {
+    name,
+    diameter: name ? toolDiameterInches(name, units) : null,
+    number: number === null ? null : Math.round(number),
+    geometry,
+    flutes: Number.isFinite(flutes) ? flutes : null,
+    source: vectricName ? "vectric" : fusionName ? "fusion" : null,
+  };
+}
+
 function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata {
   const unitsDetection = detectUnits(text);
   const units = unitsDetection?.units ?? config.machine.units;
   const unitScale = units === "mm" ? 1 / 25.4 : 1;
-  const rawToolName = text.match(/^\s*'\s*Tool Name\s*=\s*(.+)$/im)?.[1]?.trim() ?? null;
-  const toolDiameterText = rawToolName?.match(/(\d+\s*\/\s*\d+|\d*\.?\d+)\s*["″]/)?.[1];
+  const detectedTool = detectToolFromSource(text);
   const rawOrigin = text.match(/^\s*&PWZorigin\s*=\s*([^\r\n']+)/im)?.[1]?.trim() ?? "";
   const isTableOrigin = /table|bed/i.test(rawOrigin);
   const toolNumber = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im);
@@ -194,9 +251,12 @@ function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata 
     materialHeight: height === null ? null : height * unitScale,
     safeZ: safeZ === null ? null : safeZ * unitScale,
     zOrigin: isTableOrigin ? "table" : "top",
-    toolName: rawToolName,
-    toolDiameter: toolDiameterText ? parseFraction(toolDiameterText) : null,
+    toolName: detectedTool.name,
+    toolDiameter: detectedTool.diameter,
     toolNumber: toolNumber === null ? null : Math.round(toolNumber),
+    toolGeometry: detectedTool.geometry,
+    toolFlutes: detectedTool.flutes,
+    toolSource: detectedTool.source,
   };
 }
 

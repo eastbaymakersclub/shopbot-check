@@ -19,6 +19,8 @@ test("server-renders the ShopBot Check shell", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /ShopBot Check/);
-  assert.match(html, /See the cut before the machine does/);
+  assert.match(html, /Job setup/);
+  assert.match(html, /Analysis/);
+  assert.doesNotMatch(html, /synthetic demo/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
