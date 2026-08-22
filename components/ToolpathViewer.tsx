@@ -3,7 +3,8 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { AnalysisConfig, AnalysisResult, Point3 } from "../lib/sbp";
+import type { AnalysisConfig, AnalysisResult } from "../lib/sbp";
+import { mapShopBotPoint, mapShopBotY } from "../lib/viewer-coordinates";
 
 export type ViewerMode = "orbit" | "top" | "machine";
 
@@ -12,10 +13,6 @@ interface ToolpathViewerProps {
   config: AnalysisConfig;
   selectedLine: number | null;
   mode: ViewerMode;
-}
-
-function mapped(point: Point3, config: AnalysisConfig): [number, number, number] {
-  return [point.x + config.workOffset.x, point.z, point.y + config.workOffset.y];
 }
 
 export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathViewerProps) {
@@ -48,15 +45,15 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
     const tableY = config.stock.zOrigin === "top" ? -config.stock.thickness : 0;
     const gridSize = Math.max(machineWidth, machineHeight);
     const grid = new THREE.GridHelper(gridSize, 24, 0x36524b, 0x1e2a26);
-    grid.position.set((machine.x.min + machine.x.max) / 2, tableY - 0.01, (machine.y.min + machine.y.max) / 2);
+    grid.position.set((machine.x.min + machine.x.max) / 2, tableY - 0.01, mapShopBotY((machine.y.min + machine.y.max) / 2));
     scene.add(grid);
 
     const outlinePoints = [
-      new THREE.Vector3(machine.x.min, tableY, machine.y.min),
-      new THREE.Vector3(machine.x.max, tableY, machine.y.min),
-      new THREE.Vector3(machine.x.max, tableY, machine.y.max),
-      new THREE.Vector3(machine.x.min, tableY, machine.y.max),
-      new THREE.Vector3(machine.x.min, tableY, machine.y.min),
+      new THREE.Vector3(machine.x.min, tableY, mapShopBotY(machine.y.min)),
+      new THREE.Vector3(machine.x.max, tableY, mapShopBotY(machine.y.min)),
+      new THREE.Vector3(machine.x.max, tableY, mapShopBotY(machine.y.max)),
+      new THREE.Vector3(machine.x.min, tableY, mapShopBotY(machine.y.max)),
+      new THREE.Vector3(machine.x.min, tableY, mapShopBotY(machine.y.min)),
     ];
     const outline = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(outlinePoints),
@@ -71,7 +68,11 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
       stockGeometry,
       new THREE.MeshBasicMaterial({ color: 0xa9864f, transparent: true, opacity: 0.08, depthWrite: false }),
     );
-    stockMesh.position.set(stock.width / 2 + config.workOffset.x, stockSurface - stock.thickness / 2, stock.height / 2 + config.workOffset.y);
+    stockMesh.position.set(
+      stock.width / 2 + config.workOffset.x,
+      stockSurface - stock.thickness / 2,
+      mapShopBotY(stock.height / 2, config.workOffset.y),
+    );
     scene.add(stockMesh);
     const stockEdges = new THREE.LineSegments(
       new THREE.EdgesGeometry(stockGeometry),
@@ -86,7 +87,10 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
       const machineLimit = config.machine.limits;
       const color = new THREE.Color();
       for (const segment of result.segments) {
-        positions.push(...mapped(segment.from, config), ...mapped(segment.to, config));
+        positions.push(
+          ...mapShopBotPoint(segment.from, config.workOffset),
+          ...mapShopBotPoint(segment.to, config.workOffset),
+        );
         const fromX = segment.from.x + config.workOffset.x;
         const toX = segment.to.x + config.workOffset.x;
         const fromY = segment.from.y + config.workOffset.y;
@@ -108,8 +112,20 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
       scene.add(path);
     }
 
-    const axes = new THREE.AxesHelper(Math.min(4, Math.max(1, Math.max(machineWidth, machineHeight) / 12)));
-    axes.position.set(config.workOffset.x, stockSurface + 0.02, config.workOffset.y);
+    const axisLength = Math.min(4, Math.max(1, Math.max(machineWidth, machineHeight) / 12));
+    const axesGeometry = new THREE.BufferGeometry();
+    axesGeometry.setAttribute("position", new THREE.Float32BufferAttribute([
+      0, 0, 0, axisLength, 0, 0,
+      0, 0, 0, 0, 0, -axisLength,
+      0, 0, 0, 0, axisLength, 0,
+    ], 3));
+    axesGeometry.setAttribute("color", new THREE.Float32BufferAttribute([
+      1, 0.2, 0.18, 1, 0.2, 0.18,
+      0.3, 0.82, 0.39, 0.3, 0.82, 0.39,
+      0.4, 0.77, 0.9, 0.4, 0.77, 0.9,
+    ], 3));
+    const axes = new THREE.LineSegments(axesGeometry, new THREE.LineBasicMaterial({ vertexColors: true }));
+    axes.position.set(config.workOffset.x, stockSurface + 0.02, mapShopBotY(0, config.workOffset.y));
     scene.add(axes);
 
     const fitCamera = () => {
@@ -127,7 +143,7 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
       const center = new THREE.Vector3(
         (bounds.minX + bounds.maxX) / 2,
         (bounds.minZ + bounds.maxZ) / 2,
-        (bounds.minY + bounds.maxY) / 2,
+        mapShopBotY((bounds.minY + bounds.maxY) / 2),
       );
       const spanX = Math.max(0.5, bounds.maxX - bounds.minX);
       const spanY = Math.max(0.5, bounds.maxY - bounds.minY);
@@ -148,12 +164,16 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
     };
     fitCamera();
 
+    let resizeFrame = 0;
     const resize = () => {
-      const width = Math.max(1, host.clientWidth);
-      const height = Math.max(1, host.clientHeight);
-      renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        const width = Math.max(1, host.clientWidth);
+        const height = Math.max(1, host.clientHeight);
+        renderer.setSize(width, height, false);
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+      });
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -169,6 +189,7 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
 
     return () => {
       cancelAnimationFrame(frame);
+      cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       controls.dispose();
       scene.traverse((object) => {
