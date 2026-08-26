@@ -58,6 +58,16 @@ SBP_SAMPLE_DIR=/absolute/path/to/sbp-files npm test
 - Vitest unit and private-corpus contract tests
 - no database, server analysis, account, upload, or telemetry
 
+## Deployment
+
+Production is deployed to Cloudflare Workers at
+[virtualcut.eastbaymakersclub.com](https://virtualcut.eastbaymakersclub.com/).
+Cloudflare Workers Builds tracks the `main` branch. Its build command is
+`npm run build`, and its deploy command is
+`npx wrangler deploy --config dist/server/wrangler.json`.
+
+For an authenticated local deployment, run `npm run deploy:cloudflare`.
+
 ## Contributing
 
 Please open an issue with a minimal synthetic `.sbp` example when proposing support for a new OpenSBP construct. Do not attach member or production design files unless you have permission to publish them.
