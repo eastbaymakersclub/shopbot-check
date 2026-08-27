@@ -90,6 +90,9 @@ export interface ProgramMetadata {
   toolNumber: number | null;
   toolGeometry: CutterPreset["geometry"] | null;
   toolFlutes: number | null;
+  toolFluteLength: number | null;
+  toolVendor: string | null;
+  toolProductId: string | null;
   toolSource: "vectric" | "fusion" | null;
 }
 
@@ -99,6 +102,9 @@ export interface DetectedTool {
   number: number | null;
   geometry: CutterPreset["geometry"] | null;
   flutes: number | null;
+  fluteLength: number | null;
+  vendor: string | null;
+  productId: string | null;
   source: ProgramMetadata["toolSource"];
 }
 
@@ -203,16 +209,30 @@ function firstNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function virtualCutToolField(text: string, field: string): string | null {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.match(new RegExp(`^\\s*'\\s*VirtualCut:\\s*${escaped}\\s*=\\s*(.+?)\\s*$`, "im"))?.[1]?.trim() ?? null;
+}
+
 export function detectToolFromSource(text: string): DetectedTool {
   const units = detectUnits(text)?.units ?? "in";
   const vectricName = text.match(/^\s*'\s*Tool Name\s*=\s*(.+)$/im)?.[1];
   const fusionName = text.match(/^\s*&ToolName\s*=\s*(.+)$/im)?.[1];
-  const rawName = vectricName ?? fusionName ?? null;
+  const structuredType = virtualCutToolField(text, "tool-type");
+  const structuredDescription = virtualCutToolField(text, "tool-description");
+  const structuredComment = virtualCutToolField(text, "tool-comment");
+  const rawName = structuredDescription ?? structuredComment ?? fusionName ?? vectricName ?? structuredType ?? null;
   const name = rawName ? cleanToolName(rawName) : null;
-  const normalized = name?.toLowerCase() ?? "";
-  const number = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im);
-  const fluteText = normalized.match(/(\d+)\s*(?:-\s*)?flutes?\b/)?.[1];
-  const flutes = fluteText ? Number.parseInt(fluteText, 10) : null;
+  const normalized = [structuredType, structuredDescription, structuredComment, name].filter(Boolean).join(" ").toLowerCase();
+  const number = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im)
+    ?? firstNumber(text, /^\s*'\s*VirtualCut:\s*tool-number\s*=\s*(-?\d+(?:\.\d+)?)/im);
+  const structuredFlutes = virtualCutToolField(text, "tool-flutes");
+  const fluteText = structuredFlutes ?? normalized.match(/(\d+)\s*(?:-\s*)?flutes?\b/)?.[1] ?? null;
+  const parsedFlutes = fluteText ? Number.parseInt(fluteText, 10) : null;
+  const structuredUnits = virtualCutToolField(text, "tool-units")?.toLowerCase() ?? units;
+  const structuredDiameter = Number.parseFloat(virtualCutToolField(text, "tool-diameter") ?? "");
+  const structuredFluteLength = Number.parseFloat(virtualCutToolField(text, "tool-flute-length") ?? "");
+  const structuredScale = structuredUnits === "mm" ? 1 / 25.4 : 1;
   let geometry: CutterPreset["geometry"] | null = null;
   if (/ball(?:\s+nose|\s+end)?/.test(normalized)) geometry = "ball-nose";
   else if (/compression/.test(normalized)) geometry = "compression";
@@ -220,11 +240,14 @@ export function detectToolFromSource(text: string): DetectedTool {
 
   return {
     name,
-    diameter: name ? toolDiameterInches(name, units) : null,
+    diameter: Number.isFinite(structuredDiameter) ? structuredDiameter * structuredScale : name ? toolDiameterInches(name, units) : null,
     number: number === null ? null : Math.round(number),
     geometry,
-    flutes: Number.isFinite(flutes) ? flutes : null,
-    source: vectricName ? "vectric" : fusionName ? "fusion" : null,
+    flutes: Number.isFinite(parsedFlutes) ? parsedFlutes : null,
+    fluteLength: Number.isFinite(structuredFluteLength) ? structuredFluteLength * structuredScale : null,
+    vendor: virtualCutToolField(text, "tool-vendor"),
+    productId: virtualCutToolField(text, "tool-product-id"),
+    source: structuredType || structuredDescription || structuredComment || Number.isFinite(structuredDiameter) || fusionName ? "fusion" : vectricName ? "vectric" : null,
   };
 }
 
@@ -256,6 +279,9 @@ function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata 
     toolNumber: toolNumber === null ? null : Math.round(toolNumber),
     toolGeometry: detectedTool.geometry,
     toolFlutes: detectedTool.flutes,
+    toolFluteLength: detectedTool.fluteLength,
+    toolVendor: detectedTool.vendor,
+    toolProductId: detectedTool.productId,
     toolSource: detectedTool.source,
   };
 }
@@ -559,6 +585,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   const bounds = finiteBounds(programBounds);
   const cutBounds = Number.isFinite(cuttingBounds.minX) ? finiteBounds(cuttingBounds) : null;
   const cutterDiameter = metadata.toolDiameter ?? config.cutter.diameter;
+  const cutterFlutes = metadata.toolFlutes ?? config.cutter.flutes;
   const cutterRadius = cutterDiameter / 2;
   const zeroRange = {
     x: { min: config.machine.limits.x.min - bounds.minX, max: config.machine.limits.x.max - bounds.maxX },
@@ -675,9 +702,9 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     max: config.cutter.chipLoad.max * effectiveStock.chipLoadFactor * depthModifier,
   };
   const chipLoadSamples = engagedHorizontal
-    .filter((segment) => segment.rpm && segment.rpm > 0 && config.cutter.flutes > 0)
+    .filter((segment) => segment.rpm && segment.rpm > 0 && cutterFlutes > 0)
     .map((segment) => ({
-      chipLoad: segment.feedIps * 60 / ((segment.rpm as number) * config.cutter.flutes),
+      chipLoad: segment.feedIps * 60 / ((segment.rpm as number) * cutterFlutes),
       rpm: segment.rpm as number,
     }));
   const maxChipLoadSample = chipLoadSamples.reduce<(typeof chipLoadSamples)[number] | null>(
@@ -686,8 +713,8 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   );
   const maxChipLoad = maxChipLoadSample?.chipLoad ?? null;
   const targetFeedRange = maxChipLoadSample ? {
-    min: adjustedRange.min * maxChipLoadSample.rpm * config.cutter.flutes,
-    max: adjustedRange.max * maxChipLoadSample.rpm * config.cutter.flutes,
+    min: adjustedRange.min * maxChipLoadSample.rpm * cutterFlutes,
+    max: adjustedRange.max * maxChipLoadSample.rpm * cutterFlutes,
   } : null;
   const targetFeedText = targetFeedRange
     ? `A calculated starting band is ${Math.round(targetFeedRange.min)}–${Math.round(targetFeedRange.max)} ipm at ${maxChipLoadSample?.rpm.toLocaleString()} RPM.`

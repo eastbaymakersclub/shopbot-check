@@ -42,6 +42,58 @@ describe("OpenSBP static analyzer", () => {
     });
   });
 
+  it("reads exact structured tool metadata from the VirtualCut Fusion patch", () => {
+    const detected = detectToolFromSource([
+      "' ROUTER FILE IN INCHES",
+      "' VirtualCut: tool-number=7",
+      "' VirtualCut: tool-diameter=0.375",
+      "' VirtualCut: tool-units=in",
+      "' VirtualCut: tool-flutes=3",
+      "' VirtualCut: tool-type=flat end mill",
+      "' VirtualCut: tool-flute-length=1.25",
+      "' VirtualCut: tool-description=3/8 Compression Cutter",
+      "' VirtualCut: tool-vendor=Example Tools",
+      "' VirtualCut: tool-product-id=ABC-123",
+    ].join("\n"));
+
+    expect(detected).toEqual({
+      name: "3/8 Compression Cutter",
+      diameter: 0.375,
+      number: 7,
+      geometry: "compression",
+      flutes: 3,
+      fluteLength: 1.25,
+      vendor: "Example Tools",
+      productId: "ABC-123",
+      source: "fusion",
+    });
+  });
+
+  it("uses embedded Fusion flute count for chip-load analysis", () => {
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      "' VirtualCut: tool-diameter=0.5",
+      "' VirtualCut: tool-units=in",
+      "' VirtualCut: tool-flutes=4",
+      "' VirtualCut: tool-type=flat end mill",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "J2, 0, 0",
+      "M3, 0, 0, -0.125",
+      "M3, 1, 0, -0.125",
+      "C7",
+      "END",
+    ].join("\n");
+
+    const result = analyzeProgram("fusion-metadata.sbp", source, DEFAULT_CONFIG);
+
+    expect(result.metadata.toolFlutes).toBe(4);
+    expect(result.stats.chipLoad).toBeCloseTo(0.0015);
+  });
+
   it("reports a rapid that enters material", () => {
     const result = analyzeProgram("unsafe-rapid.sbp", fixture("unsafe-rapid.sbp"), DEFAULT_CONFIG);
     expect(result.issues.find((item) => item.id === "rapid-in-stock")?.severity).toBe("error");

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent 
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import type { ViewerMode } from "../components/ToolpathViewer";
+import { FusionPostBuilder } from "../components/FusionPostBuilder";
 import { CUTTER_PRESETS, DEFAULT_CONFIG, STOCK_PRESETS } from "../lib/presets";
 import {
   detectToolFromSource,
@@ -55,14 +56,24 @@ function updateNumber(value: string, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function cutterPresetFromSource(source: string): CutterPreset | null {
+function cutterPresetFromSource(source: string, fallback: CutterPreset): CutterPreset | null {
   const detected = detectToolFromSource(source);
-  if (!detected.diameter || !detected.geometry) return null;
-  return CUTTER_PRESETS.find((preset) => (
-    preset.geometry === detected.geometry
-    && Math.abs(preset.diameter - detected.diameter!) < 0.001
-    && (!detected.flutes || preset.flutes === detected.flutes)
-  )) ?? null;
+  if (!detected.diameter && !detected.flutes && !detected.geometry) return null;
+  const preset = CUTTER_PRESETS.find((item) => (
+    (!detected.geometry || item.geometry === detected.geometry)
+    && (!detected.diameter || Math.abs(item.diameter - detected.diameter) < 0.001)
+    && (!detected.flutes || item.flutes === detected.flutes)
+  ));
+  if (preset) return preset;
+  return {
+    ...fallback,
+    id: "fusion-detected",
+    name: detected.name ?? "Fusion cutter",
+    diameter: detected.diameter ?? fallback.diameter,
+    flutes: detected.flutes ?? fallback.flutes,
+    geometry: detected.geometry ?? fallback.geometry,
+    source: detected.source === "fusion" ? "Fusion tool metadata" : "Tool metadata in file",
+  };
 }
 
 export function ShopbotApp() {
@@ -132,8 +143,10 @@ export function ShopbotApp() {
       return;
     }
     const text = await file.text();
-    const detectedPreset = cutterPresetFromSource(text);
-    if (detectedPreset) setConfig((current) => ({ ...current, cutter: detectedPreset }));
+    setConfig((current) => {
+      const detectedCutter = cutterPresetFromSource(text, current.cutter);
+      return detectedCutter ? { ...current, cutter: detectedCutter } : current;
+    });
     setError(null);
     setBusy(true);
     setResult(null);
@@ -175,10 +188,10 @@ export function ShopbotApp() {
   };
 
   const toolDetectionText = result?.metadata.toolName
-    ? `${result.metadata.toolSource === "fusion" ? "Fusion" : "V-Carve / Vectric"} metadata: ${result.metadata.toolName}`
+    ? `${result.metadata.toolSource === "fusion" ? "Fusion" : "V-Carve / Vectric"} metadata: ${result.metadata.toolName}${result.metadata.toolDiameter ? ` · ${result.metadata.toolDiameter.toFixed(3)}″` : ""}${result.metadata.toolFlutes ? ` · ${result.metadata.toolFlutes} flutes` : ""}${result.metadata.toolVendor ? ` · ${result.metadata.toolVendor}` : ""}`
     : result
       ? `Only Tool ${result.metadata.toolNumber ?? "number"} was embedded; confirm the cutter preset.`
-      : "Reads V-Carve tool names and Fusion &ToolName comments when present.";
+      : "Reads exact VirtualCut Fusion metadata, V-Carve tool names, and Fusion &ToolName comments.";
 
   return (
     <main className="app-shell">
@@ -249,7 +262,7 @@ export function ShopbotApp() {
           <details className="configuration" open>
             <summary>Machine, stock & cutter <span>Adjust</span></summary>
             <div className="setup-fields">
-              <label className="wide"><span>Cutter preset</span><select value={config.cutter.id} onChange={(event) => chooseCutter(event.target.value)}><option value="custom">Custom cutter</option>{CUTTER_PRESETS.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select></label>
+              <label className="wide"><span>Cutter preset</span><select value={config.cutter.id} onChange={(event) => chooseCutter(event.target.value)}><option value="custom">Custom cutter</option>{!CUTTER_PRESETS.some((preset) => preset.id === config.cutter.id) && config.cutter.id !== "custom" && <option value={config.cutter.id}>{config.cutter.name}</option>}{CUTTER_PRESETS.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}</select></label>
               <label><span>Diameter (in)</span><input type="number" min="0.01" step="0.001" value={config.cutter.diameter} onChange={(event) => updateCutter({ diameter: updateNumber(event.target.value, config.cutter.diameter) })} /></label>
               <label><span>Flutes</span><input type="number" min="1" max="8" step="1" value={config.cutter.flutes} onChange={(event) => updateCutter({ flutes: Math.max(1, Math.round(updateNumber(event.target.value, config.cutter.flutes))) })} /></label>
               <p className="tool-detection wide">{toolDetectionText}</p>
@@ -340,6 +353,8 @@ export function ShopbotApp() {
           </div>
         </div>
       </section>
+
+      <FusionPostBuilder />
 
       <section className="safety-note">
         <strong>Preflight aid, not a safety guarantee.</strong>

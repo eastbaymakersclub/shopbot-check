@@ -17,6 +17,7 @@ Drop in a part file to get an interactive 3D toolpath, machine- and stock-envelo
 - unexpected machine-global setting commands
 - chip load (`feed / (RPM × flutes)`) with material, cutter, and pass-depth adjustment
 - numerical starting feed bands and conservative pass/plunge recommendations
+- structured Fusion tool metadata from the optional VirtualCut ShopBot post patch
 
 The initial parser boundary is intentionally narrow: it fully analyzes the OpenSBP constructs used by EBMC’s August 2026 sample corpus and fails closed on anything unresolved. Supported constructs include assignments, the standard unit guard, `SA`, `CN 90/91`, `C6/C7/C9`, `TR`, `MS`, `PAUSE`, `JZ/J2/J3`, `M2/M3`, `CG`, `SF`, labels, and `END`.
 
@@ -48,6 +49,12 @@ Synthetic, non-member fixtures live in `tests/fixtures`. To run the same parser 
 ```bash
 SBP_SAMPLE_DIR=/absolute/path/to/sbp-files npm test
 ```
+
+## Fusion post integration
+
+The public app includes a browser-only builder for the VirtualCut edition of Autodesk's ShopBot OpenSBP post. It adds inert comments for tool number, diameter, units, flute count, type, flute length, description, comment, vendor, and product ID at each tool change. The analyzer uses exact embedded diameter and flute count when they are present.
+
+Autodesk's original post is not stored or redistributed by this project. Members download it directly from Autodesk, then choose that local `.cps` file in VirtualCut. The patch and generated download remain in the browser. Review Autodesk's terms and carefully test any customized post before using it on a machine.
 
 ## Architecture
 
