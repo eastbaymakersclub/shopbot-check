@@ -308,16 +308,23 @@ export function ShopbotApp() {
             </div>
             <div className="issue-list" aria-label="Analysis findings">
               {result?.issues.map((item) => (
-                <button
+                <div
                   key={item.id}
                   className={`issue ${item.severity} ${selectedIssue === item.id ? "selected" : ""}`}
-                  onClick={() => setSelectedIssue(selectedIssue === item.id ? null : item.id)}
-                  aria-expanded={selectedIssue === item.id}
                 >
                   <span className="issue-symbol">{issueSymbol(item)}</span>
                   <span><strong>{item.title}</strong><small>{item.detail}</small></span>
-                  <em>{item.category.replace("-", " ")}</em>
-                </button>
+                  <button
+                    type="button"
+                    className="issue-action"
+                    onClick={() => setSelectedIssue(selectedIssue === item.id ? null : item.id)}
+                    aria-expanded={selectedIssue === item.id}
+                    aria-label={`${selectedIssue === item.id ? "Hide" : "Show"} details for ${item.title}`}
+                  >
+                    <em>{item.category.replace("-", " ")}</em>
+                    <span aria-hidden="true">{selectedIssue === item.id ? "−" : "+"}</span>
+                  </button>
+                </div>
               ))}
               {!result && <div className="issues-empty">Load an .SBP file in Job setup to see the full preflight report.</div>}
             </div>

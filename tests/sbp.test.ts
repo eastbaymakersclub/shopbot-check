@@ -69,6 +69,33 @@ describe("OpenSBP static analyzer", () => {
     expect(result.bounds.maxY).toBeCloseTo(2);
     expect(result.bounds.maxZ).toBeCloseTo(0.25);
   });
+
+  it("measures repeated Fusion-style contours by incremental pass depth", () => {
+    const passes = [-0.125, -0.25, -0.375, -0.5, -0.625]
+      .flatMap((depth) => [
+        "M3, 0, 0, 0.2",
+        `M3, 0, 0, ${depth}`,
+        `M3, 1, 0, ${depth}`,
+      ]);
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "J2, 0, 0",
+      ...passes,
+      "C7",
+      "END",
+    ].join("\n");
+
+    const result = analyzeProgram("fusion-stepdowns.sbp", source, DEFAULT_CONFIG);
+
+    expect(result.stats.maximumDepth).toBeCloseTo(0.625);
+    expect(result.stats.maxPassDepth).toBeCloseTo(0.125);
+    expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
+  });
 });
 
 const sampleDirectory = process.env.SBP_SAMPLE_DIR;

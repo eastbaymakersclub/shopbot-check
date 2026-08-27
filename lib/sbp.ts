@@ -344,6 +344,17 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   let firstCutWithoutSpindle: { line: number; source: string } | null = null;
   let maxPassDepth = 0;
   let maxPlungeIps = 0;
+  const deepestCutByPoint = new Map<string, number>();
+
+  const cutPointKey = (point: Point3) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`;
+  const recordCutDepth = (point: Point3) => {
+    const depth = Math.max(0, stockSurface - point.z);
+    if (depth <= EPSILON) return;
+    const key = cutPointKey(point);
+    const previousDepth = deepestCutByPoint.get(key) ?? 0;
+    maxPassDepth = Math.max(maxPassDepth, depth - previousDepth);
+    deepestCutByPoint.set(key, Math.max(previousDepth, depth));
+  };
 
   const addSegment = (
     from: Point3,
@@ -373,10 +384,13 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
       addPoint(cuttingBounds, from);
       addPoint(cuttingBounds, to);
       if (!spindleRunning && !firstCutWithoutSpindle) firstCutWithoutSpindle = { line, source: source.trim() };
+      // A retract followed by a deeper return to an already-cut XY location is
+      // another pass, not one plunge through the program's entire cut depth.
+      // Track the deepest cut seen at each toolpath point so repeated Fusion and
+      // Vectric contours measure only the newly engaged axial depth.
+      recordCutDepth(from);
+      recordCutDepth(to);
       if (to.z < from.z - EPSILON) {
-        const startDepth = Math.max(0, stockSurface - from.z);
-        const endDepth = Math.max(0, stockSurface - to.z);
-        maxPassDepth = Math.max(maxPassDepth, endDepth - startDepth);
         maxPlungeIps = Math.max(maxPlungeIps, zFeedIps);
       }
     }
