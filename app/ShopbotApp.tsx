@@ -124,7 +124,7 @@ export function ShopbotApp() {
   const selected = result?.issues.find((item) => item.id === selectedIssue) ?? null;
   const status = statusFor(result);
   const selectedLine = selected?.line ?? null;
-  const effectiveCutterName = result?.metadata.toolName ?? config.cutter.name;
+  const effectiveCutterName = config.cutter.name;
   const issueCounts = useMemo(() => {
     const counts = { error: 0, warning: 0, info: 0, pass: 0 };
     result?.issues.forEach((item) => { counts[item.severity] += 1; });
@@ -187,8 +187,12 @@ export function ShopbotApp() {
     setConfig((current) => ({ ...current, stock: { ...current.stock, ...patch } }));
   };
 
+  const hasCutterOverride = Boolean(result && (
+    (result.metadata.toolDiameter !== null && Math.abs(result.metadata.toolDiameter - config.cutter.diameter) > 0.001)
+    || (result.metadata.toolFlutes !== null && result.metadata.toolFlutes !== config.cutter.flutes)
+  ));
   const toolDetectionText = result?.metadata.toolName
-    ? `${result.metadata.toolSource === "fusion" ? "Fusion" : "V-Carve / Vectric"} metadata: ${result.metadata.toolName}${result.metadata.toolDiameter ? ` · ${result.metadata.toolDiameter.toFixed(3)}″` : ""}${result.metadata.toolFlutes ? ` · ${result.metadata.toolFlutes} flutes` : ""}${result.metadata.toolVendor ? ` · ${result.metadata.toolVendor}` : ""}`
+    ? `${result.metadata.toolSource === "fusion" ? "Fusion" : "V-Carve / Vectric"} metadata: ${result.metadata.toolName}${result.metadata.toolDiameter ? ` · ${result.metadata.toolDiameter.toFixed(3)}″` : ""}${result.metadata.toolFlutes ? ` · ${result.metadata.toolFlutes} flutes` : ""}${result.metadata.toolVendor ? ` · ${result.metadata.toolVendor}` : ""}${hasCutterOverride ? ` · Using Job setup override: ${config.cutter.diameter.toFixed(3)}″ · ${config.cutter.flutes} flutes` : " · Loaded into Job setup"}`
     : result
       ? `Only Tool ${result.metadata.toolNumber ?? "number"} was embedded; confirm the cutter preset.`
       : "Reads exact VirtualCut Fusion metadata, V-Carve tool names, and Fusion &ToolName comments.";

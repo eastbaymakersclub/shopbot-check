@@ -69,7 +69,7 @@ describe("OpenSBP static analyzer", () => {
     });
   });
 
-  it("uses embedded Fusion flute count for chip-load analysis", () => {
+  it("uses auto-filled Fusion flute count until Job setup overrides it", () => {
     const source = [
       "' ROUTER FILE IN INCHES",
       "' VirtualCut: tool-diameter=0.5",
@@ -88,10 +88,21 @@ describe("OpenSBP static analyzer", () => {
       "END",
     ].join("\n");
 
-    const result = analyzeProgram("fusion-metadata.sbp", source, DEFAULT_CONFIG);
+    const autoFilledConfig = {
+      ...DEFAULT_CONFIG,
+      cutter: { ...DEFAULT_CONFIG.cutter, diameter: 0.5, flutes: 4 },
+    };
+    const autoFilledResult = analyzeProgram("fusion-metadata.sbp", source, autoFilledConfig);
+    const overriddenResult = analyzeProgram("fusion-metadata.sbp", source, {
+      ...autoFilledConfig,
+      cutter: { ...autoFilledConfig.cutter, flutes: 2 },
+    });
 
-    expect(result.metadata.toolFlutes).toBe(4);
-    expect(result.stats.chipLoad).toBeCloseTo(0.0015);
+    expect(autoFilledResult.metadata.toolFlutes).toBe(4);
+    expect(autoFilledResult.stats.chipLoad).toBeCloseTo(0.0015);
+    expect(overriddenResult.metadata.toolFlutes).toBe(4);
+    expect(overriddenResult.stats.chipLoad).toBeCloseTo(0.003);
+    expect(overriddenResult.issues.find((item) => item.id === "tool-operator-override")?.severity).toBe("info");
   });
 
   it("reports a rapid that enters material", () => {
@@ -127,6 +138,12 @@ describe("OpenSBP static analyzer", () => {
       .flatMap((depth) => [
         "M3, 0, 0, 0.2",
         `M3, 0, 0, ${depth}`,
+        ...(depth === -0.625 ? [
+          `M3, 0.4, 0, ${depth}`,
+          "M3, 0.4, 0, -0.6",
+          "M3, 0.6, 0, -0.6",
+          `M3, 0.6, 0, ${depth}`,
+        ] : []),
         `M3, 1, 0, ${depth}`,
       ]);
     const source = [

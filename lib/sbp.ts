@@ -370,16 +370,60 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   let firstCutWithoutSpindle: { line: number; source: string } | null = null;
   let maxPassDepth = 0;
   let maxPlungeIps = 0;
-  const deepestCutByPoint = new Map<string, number>();
+  const deepestPlateauByPoint = new Map<string, number>();
+  let cutCycleActive = false;
+  let cutCycleBaselineDepth = 0;
+  let cutCycleDeepestDepth = 0;
+  let cutCycleDeepestPlateau = 0;
+  let cutCycleSawPlateau = false;
 
   const cutPointKey = (point: Point3) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`;
-  const recordCutDepth = (point: Point3) => {
-    const depth = Math.max(0, stockSurface - point.z);
-    if (depth <= EPSILON) return;
-    const key = cutPointKey(point);
-    const previousDepth = deepestCutByPoint.get(key) ?? 0;
-    maxPassDepth = Math.max(maxPassDepth, depth - previousDepth);
-    deepestCutByPoint.set(key, Math.max(previousDepth, depth));
+  const cutDepth = (point: Point3) => Math.max(0, stockSurface - point.z);
+  const finishCutCycle = () => {
+    if (cutCycleActive && !cutCycleSawPlateau) {
+      maxPassDepth = Math.max(maxPassDepth, cutCycleDeepestDepth - cutCycleBaselineDepth);
+    }
+    cutCycleActive = false;
+    cutCycleBaselineDepth = 0;
+    cutCycleDeepestDepth = 0;
+    cutCycleDeepestPlateau = 0;
+    cutCycleSawPlateau = false;
+  };
+  const beginCutCycle = (from: Point3, to: Point3) => {
+    let entry = from;
+    if (from.z >= stockSurface - EPSILON && to.z < stockSurface - EPSILON && Math.abs(to.z - from.z) > EPSILON) {
+      const amount = (stockSurface - from.z) / (to.z - from.z);
+      entry = {
+        x: from.x + (to.x - from.x) * amount,
+        y: from.y + (to.y - from.y) * amount,
+        z: stockSurface,
+      };
+    }
+    cutCycleBaselineDepth = deepestPlateauByPoint.get(cutPointKey(entry)) ?? 0;
+    cutCycleDeepestDepth = cutCycleBaselineDepth;
+    cutCycleDeepestPlateau = cutCycleBaselineDepth;
+    cutCycleSawPlateau = false;
+    cutCycleActive = true;
+  };
+  const recordCutSegment = (from: Point3, to: Point3, horizontalDistance: number) => {
+    if (!cutCycleActive) beginCutCycle(from, to);
+    const deepestDepth = Math.max(cutDepth(from), cutDepth(to));
+    cutCycleDeepestDepth = Math.max(cutCycleDeepestDepth, deepestDepth);
+
+    // Fusion and Vectric ramps settle onto a constant-Z cutting plateau for
+    // each pass. Measuring the change between those plateaus avoids treating
+    // new tab points introduced only on a deep contour as a full-depth plunge.
+    const isCuttingPlateau = horizontalDistance > EPSILON && Math.abs(to.z - from.z) <= EPSILON;
+    if (!isCuttingPlateau || deepestDepth <= EPSILON) return;
+    if (deepestDepth > cutCycleDeepestPlateau + EPSILON) {
+      maxPassDepth = Math.max(maxPassDepth, deepestDepth - cutCycleDeepestPlateau);
+      cutCycleDeepestPlateau = deepestDepth;
+    }
+    cutCycleSawPlateau = true;
+    for (const point of [from, to]) {
+      const key = cutPointKey(point);
+      deepestPlateauByPoint.set(key, Math.max(deepestPlateauByPoint.get(key) ?? 0, deepestDepth));
+    }
   };
 
   const addSegment = (
@@ -410,12 +454,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
       addPoint(cuttingBounds, from);
       addPoint(cuttingBounds, to);
       if (!spindleRunning && !firstCutWithoutSpindle) firstCutWithoutSpindle = { line, source: source.trim() };
-      // A retract followed by a deeper return to an already-cut XY location is
-      // another pass, not one plunge through the program's entire cut depth.
-      // Track the deepest cut seen at each toolpath point so repeated Fusion and
-      // Vectric contours measure only the newly engaged axial depth.
-      recordCutDepth(from);
-      recordCutDepth(to);
+      recordCutSegment(from, to, horizontalDistance);
       if (to.z < from.z - EPSILON) {
         maxPlungeIps = Math.max(maxPlungeIps, zFeedIps);
       }
@@ -428,6 +467,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     }
     if (kind === "move") moveCount += 1;
     else jogCount += 1;
+    if (to.z >= stockSurface - EPSILON) finishCutCycle();
   };
 
   let mainProgramEnded = false;
@@ -582,10 +622,15 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     if (!KNOWN_COMMANDS.has(command)) unknown.add(command || `line ${lineNumber}`);
   }
 
+  finishCutCycle();
+
   const bounds = finiteBounds(programBounds);
   const cutBounds = Number.isFinite(cuttingBounds.minX) ? finiteBounds(cuttingBounds) : null;
-  const cutterDiameter = metadata.toolDiameter ?? config.cutter.diameter;
-  const cutterFlutes = metadata.toolFlutes ?? config.cutter.flutes;
+  // File metadata is copied into the editable cutter configuration when a file
+  // is loaded. From that point on, the configuration is the source of truth so
+  // an operator can correct or intentionally override the embedded values.
+  const cutterDiameter = config.cutter.diameter;
+  const cutterFlutes = config.cutter.flutes;
   const cutterRadius = cutterDiameter / 2;
   const zeroRange = {
     x: { min: config.machine.limits.x.min - bounds.minX, max: config.machine.limits.x.max - bounds.maxX },
@@ -688,8 +733,11 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     issues.push(issue("warning", "tooling", "tool-unidentified", `Confirm Tool ${metadata.toolNumber ?? "selection"}`, `The file does not identify cutter geometry; analysis is using ${config.cutter.name}.`, {
       recommendation: "Select the cutter actually installed before relying on load or cutter-envelope checks.",
     }));
-  } else if (metadata.toolDiameter && Math.abs(metadata.toolDiameter - config.cutter.diameter) > 0.001) {
-    issues.push(issue("info", "tooling", "tool-auto-detected", "Cutter diameter detected from file", `${metadata.toolName} overrides the selected preset’s diameter for bounds and depth checks.`));
+  } else if (
+    (metadata.toolDiameter !== null && Math.abs(metadata.toolDiameter - config.cutter.diameter) > 0.001)
+    || (metadata.toolFlutes !== null && metadata.toolFlutes !== config.cutter.flutes)
+  ) {
+    issues.push(issue("info", "tooling", "tool-operator-override", "Job setup overrides cutter metadata", `The file identifies ${metadata.toolName}, but cutter checks use the diameter and flute count shown in Job setup.`));
   }
 
   const engagedHorizontal = segments.filter((segment) => segment.kind === "move" && segment.engaged && Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y) > EPSILON);
