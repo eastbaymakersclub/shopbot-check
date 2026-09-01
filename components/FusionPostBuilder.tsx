@@ -9,6 +9,8 @@ import {
 } from "../lib/fusion-post";
 
 const MAX_POST_BYTES = 2 * 1024 * 1024;
+const EBMC_TOOL_LIBRARY_URL = "/ebmc-tools-2026-09-01.tools";
+const EBMC_TOOL_LIBRARY_FILENAME = "EBMC Tools - 2026-09-01.tools";
 
 export function FusionPostBuilder() {
   const [message, setMessage] = useState("Choose Autodesk’s downloaded shopbot.cps to build the VirtualCut edition.");
@@ -49,13 +51,24 @@ export function FusionPostBuilder() {
     <section className="fusion-post-panel" id="fusion-post">
       <div className="fusion-post-copy">
         <p className="eyebrow">Fusion integration</p>
-        <h2>Put exact cutter data in every ShopBot file</h2>
-        <p>The EBMC patch adds diameter, flute count, tool type, flute length, description, vendor, and product ID as inert comments. VirtualCut reads them automatically; ShopBot ignores them.</p>
+        <h2>Set up Fusion for EBMC and VirtualCut</h2>
+        <p>Start with EBMC’s shared cutter library, then use the EBMC post patch to put exact tool data in every ShopBot file. VirtualCut reads the added comments automatically; ShopBot ignores them.</p>
         <div className="fusion-post-fields" aria-label="Embedded Fusion fields">
           <span>Diameter</span><span>Flutes</span><span>Geometry</span><span>Vendor / ID</span>
         </div>
       </div>
       <div className="fusion-post-actions">
+        <div className="fusion-tool-library">
+          <p className="fusion-resource-label">EBMC tool library</p>
+          <strong>ShopBot cutters and starting parameters</strong>
+          <a href={EBMC_TOOL_LIBRARY_URL} download={EBMC_TOOL_LIBRARY_FILENAME}>
+            Download EBMC tool library
+          </a>
+          <p className="post-install-note"><strong>Install:</strong> In Fusion’s Tool Library, select Local, choose Import Tool Library, and open the downloaded <code>.tools</code> file.</p>
+          <small>Updated September 1, 2026 · Fusion tool library</small>
+        </div>
+        <div className="fusion-post-divider" aria-hidden="true" />
+        <p className="fusion-resource-label">VirtualCut post</p>
         <ol>
           <li><a href={AUTODESK_SHOPBOT_POST_URL}>Download Autodesk’s ShopBot post ↗</a></li>
           <li>

@@ -22,6 +22,8 @@ test("server-renders the ShopBot Check shell", async () => {
   assert.match(html, /Job setup/);
   assert.match(html, /Analysis/);
   assert.match(html, /Build the EBMC edition/);
+  assert.match(html, /Download EBMC tool library/);
+  assert.match(html, /href="\/ebmc-tools-2026-09-01\.tools"/);
   assert.doesNotMatch(html, /synthetic demo/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });
