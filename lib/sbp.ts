@@ -374,20 +374,32 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   let cutCycleActive = false;
   let cutCycleBaselineDepth = 0;
   let cutCycleDeepestDepth = 0;
-  let cutCycleDeepestPlateau = 0;
   let cutCycleSawPlateau = false;
+  let cutCyclePlateaus = new Map<string, number>();
 
   const cutPointKey = (point: Point3) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`;
   const cutDepth = (point: Point3) => Math.max(0, stockSurface - point.z);
   const finishCutCycle = () => {
-    if (cutCycleActive && !cutCycleSawPlateau) {
-      maxPassDepth = Math.max(maxPassDepth, cutCycleDeepestDepth - cutCycleBaselineDepth);
+    if (cutCycleActive) {
+      let previousDepth = cutCycleBaselineDepth;
+      if (cutCycleSawPlateau) {
+        for (const key of cutCyclePlateaus.keys()) {
+          const depth = deepestPlateauByPoint.get(key);
+          if (depth !== undefined && depth <= cutCycleDeepestDepth + EPSILON) {
+            previousDepth = Math.max(previousDepth, depth);
+          }
+        }
+      }
+      maxPassDepth = Math.max(maxPassDepth, cutCycleDeepestDepth - previousDepth);
+      for (const [key, depth] of cutCyclePlateaus) {
+        deepestPlateauByPoint.set(key, Math.max(deepestPlateauByPoint.get(key) ?? 0, depth));
+      }
     }
     cutCycleActive = false;
     cutCycleBaselineDepth = 0;
     cutCycleDeepestDepth = 0;
-    cutCycleDeepestPlateau = 0;
     cutCycleSawPlateau = false;
+    cutCyclePlateaus = new Map<string, number>();
   };
   const beginCutCycle = (from: Point3, to: Point3) => {
     let entry = from;
@@ -401,8 +413,8 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     }
     cutCycleBaselineDepth = deepestPlateauByPoint.get(cutPointKey(entry)) ?? 0;
     cutCycleDeepestDepth = cutCycleBaselineDepth;
-    cutCycleDeepestPlateau = cutCycleBaselineDepth;
     cutCycleSawPlateau = false;
+    cutCyclePlateaus = new Map<string, number>();
     cutCycleActive = true;
   };
   const recordCutSegment = (from: Point3, to: Point3, horizontalDistance: number) => {
@@ -415,14 +427,10 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     // new tab points introduced only on a deep contour as a full-depth plunge.
     const isCuttingPlateau = horizontalDistance > EPSILON && Math.abs(to.z - from.z) <= EPSILON;
     if (!isCuttingPlateau || deepestDepth <= EPSILON) return;
-    if (deepestDepth > cutCycleDeepestPlateau + EPSILON) {
-      maxPassDepth = Math.max(maxPassDepth, deepestDepth - cutCycleDeepestPlateau);
-      cutCycleDeepestPlateau = deepestDepth;
-    }
     cutCycleSawPlateau = true;
     for (const point of [from, to]) {
       const key = cutPointKey(point);
-      deepestPlateauByPoint.set(key, Math.max(deepestPlateauByPoint.get(key) ?? 0, deepestDepth));
+      cutCyclePlateaus.set(key, Math.max(cutCyclePlateaus.get(key) ?? 0, deepestDepth));
     }
   };
 
@@ -645,6 +653,16 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     issues.push(issue("warning", "setup", "units-inferred", "File units are not declared", `Coordinates were interpreted as ${metadata.units === "in" ? "inches" : "millimeters"} from the machine profile.`, {
       recommendation: "Add a standard unit guard or unit header to the postprocessor output.",
     }));
+  } else if (metadata.units === "mm") {
+    issues.push(issue("error", "setup", "metric-units", "File requires metric mode", metadata.unitsSource === "unit-guard"
+      ? "The ShopBot unit guard requires millimeter mode before movement. EBMC’s PRSalpha workflow is configured for inches."
+      : "The file declares millimeter coordinates. EBMC’s PRSalpha workflow is configured for inches.", {
+      recommendation: "Repost the job from CAM with inches selected. Do not remove the guard or run these coordinates on the inch-configured machine.",
+    }));
+  } else {
+    issues.push(issue("pass", "setup", "inch-units", "File uses inches", metadata.unitsSource === "unit-guard"
+      ? "The ShopBot unit guard requires inch mode before movement."
+      : "The file declares inch coordinates."));
   }
   if (!sawAbsolute) {
     issues.push(issue("error", "setup", "absolute-mode-missing", "Absolute coordinate mode is not established", "The statically analyzable profile requires SA before movement begins.", {

@@ -17,6 +17,7 @@ describe("OpenSBP static analyzer", () => {
     expect(result.stats.maxFeedIpm).toBeCloseTo(270);
     expect(result.stats.chipLoad).toBeCloseTo(0.0075);
     expect(result.issues.some((item) => item.id === "rapid-in-stock")).toBe(false);
+    expect(result.issues.find((item) => item.id === "inch-units")?.severity).toBe("pass");
   });
 
   it("detects V-Carve / Vectric tool names and matches their geometry", () => {
@@ -124,13 +125,15 @@ describe("OpenSBP static analyzer", () => {
     expect(result.issues.find((item) => item.id === "unsupported-commands")?.severity).toBe("error");
   });
 
-  it("converts metric coordinates to canonical inches", () => {
-    const source = "' ROUTER FILE IN MM\nSA\nMS,25.4,12.7\nJ3,25.4,50.8,6.35\nEND";
+  it("rejects a metric unit guard while converting coordinates for analysis", () => {
+    const source = "' ROUTER FILE\nSA\nIF %(25)=0 THEN GOTO UNIT_ERROR\nMS,25.4,12.7\nJ3,25.4,50.8,6.35\nEND";
     const result = analyzeProgram("metric.sbp", source, DEFAULT_CONFIG);
     expect(result.metadata.units).toBe("mm");
+    expect(result.metadata.unitsSource).toBe("unit-guard");
     expect(result.bounds.maxX).toBeCloseTo(1);
     expect(result.bounds.maxY).toBeCloseTo(2);
     expect(result.bounds.maxZ).toBeCloseTo(0.25);
+    expect(result.issues.find((item) => item.id === "metric-units")?.severity).toBe("error");
   });
 
   it("measures repeated Fusion-style contours by incremental pass depth", () => {
@@ -162,6 +165,39 @@ describe("OpenSBP static analyzer", () => {
     const result = analyzeProgram("fusion-stepdowns.sbp", source, DEFAULT_CONFIG);
 
     expect(result.stats.maximumDepth).toBeCloseTo(0.625);
+    expect(result.stats.maxPassDepth).toBeCloseTo(0.125);
+    expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
+  });
+
+  it("measures step-downs when Fusion shifts the ramp between passes", () => {
+    const passes = [-0.125, -0.25, -0.375]
+      .flatMap((depth, index) => [
+        `M3, ${1 - index * 0.05}, 0, 0.2`,
+        `M3, ${0.1 - index * 0.025}, 0, ${depth}`,
+        `M3, 0.1, 0, ${depth}`,
+        `M3, 1, 0, ${depth}`,
+      ]);
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "J2, 0, 0",
+      ...passes,
+      "M3, 1, 0, 0.2",
+      "C7",
+      "END",
+    ].join("\n");
+    const config = {
+      ...DEFAULT_CONFIG,
+      cutter: { ...DEFAULT_CONFIG.cutter, diameter: 0.25 },
+    };
+
+    const result = analyzeProgram("fusion-shifted-ramps.sbp", source, config);
+
+    expect(result.stats.maximumDepth).toBeCloseTo(0.375);
     expect(result.stats.maxPassDepth).toBeCloseTo(0.125);
     expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
   });
