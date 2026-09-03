@@ -263,6 +263,34 @@ describe("OpenSBP static analyzer", () => {
     expect(beyondAllowance.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
   });
 
+  it("ignores sub-thousandth rounding noise at the stock overhang allowance", () => {
+    const sourceForMaximumX = (maximumX: number) => [
+      "' ROUTER FILE IN INCHES",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "J2, -0.125, 0",
+      "M3, -0.125, 0, -0.1",
+      `M3, ${maximumX}, 0, -0.1`,
+      "M3, -0.125, 0, -0.1",
+      "M3, -0.125, 12.5977, -0.1",
+      "C7",
+      "END",
+    ].join("\n");
+    const config = {
+      ...DEFAULT_CONFIG,
+      cutter: { ...DEFAULT_CONFIG.cutter, diameter: 0.25 },
+      stock: { ...DEFAULT_CONFIG.stock, width: 7.7731, height: 12.5977 },
+    };
+    const roundedArc = analyzeProgram("rounded-arc.sbp", sourceForMaximumX(7.898119), config);
+    const genuineOverrun = analyzeProgram("genuine-overrun.sbp", sourceForMaximumX(7.9001), config);
+
+    expect(roundedArc.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
+    expect(genuineOverrun.issues.find((item) => item.id === "stock-envelope-too-large")?.severity).toBe("warning");
+  });
+
   it("fails closed when a construct is unsupported", () => {
     const result = analyzeProgram("unsupported.sbp", "' ROUTER FILE IN INCHES\nSA\nZZ,1,2\nEND", DEFAULT_CONFIG);
     expect(result.complete).toBe(false);
@@ -373,6 +401,44 @@ describe("OpenSBP static analyzer", () => {
     const result = analyzeProgram("fusion-shifted-ramps.sbp", source, config);
 
     expect(result.stats.maximumDepth).toBeCloseTo(0.375);
+    expect(result.stats.maxPassDepth).toBeCloseTo(0.125);
+    expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
+  });
+
+  it("measures Fusion contours that stay engaged between depth levels", () => {
+    const passes = [-0.125, -0.25, -0.375, -0.5, -0.625, -0.7187]
+      .flatMap((depth, index) => [
+        ...(index === 0 ? ["M3, 0.05, 0, -0.1"] : []),
+        `M3, 0.1, 0, ${depth}`,
+        `M3, 1, 0, ${depth}`,
+        ...(depth === -0.7187 ? [
+          "M3, 1, 0.2, -0.6187",
+          "M3, 1, 0.4, -0.6187",
+          `M3, 1, 0.6, ${depth}`,
+        ] : []),
+        `M3, 0, 0, ${depth}`,
+      ]);
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "J2, 0, 0",
+      ...passes,
+      "M3, 0, 0, 0.5",
+      "C7",
+      "END",
+    ].join("\n");
+    const config = {
+      ...DEFAULT_CONFIG,
+      cutter: { ...DEFAULT_CONFIG.cutter, diameter: 0.25 },
+    };
+
+    const result = analyzeProgram("fusion-continuous-stepdowns.sbp", source, config);
+
+    expect(result.stats.maximumDepth).toBeCloseTo(0.7187);
     expect(result.stats.maxPassDepth).toBeCloseTo(0.125);
     expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
   });

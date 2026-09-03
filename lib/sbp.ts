@@ -157,6 +157,7 @@ export interface AnalysisResult {
 
 const MAX_LINES = 500_000;
 const EPSILON = 1e-7;
+const STOCK_ENVELOPE_TOLERANCE_INCHES = 0.001;
 const MAX_STOCK_CUT_THROUGH_INCHES = 0.02;
 const GLOBAL_SETTING_COMMANDS = new Set(["VL", "VU", "VI", "VN", "VA", "ST", "VO", "VD"]);
 const KNOWN_COMMANDS = new Set(["SA", "CN", "C6", "C7", "C9", "TR", "MS", "PAUSE", "JZ", "J2", "J3", "M2", "M3", "CG", "END", "SF"]);
@@ -466,6 +467,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   let cutCycleDeepestDepth = 0;
   let cutCycleSawPlateau = false;
   let cutCyclePlateaus = new Map<string, number>();
+  let cutCyclePlateauDepths: number[] = [];
 
   const cutPointKey = (point: Point3) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`;
   const cutDepth = (point: Point3) => Math.max(0, stockSurface - point.z);
@@ -480,7 +482,20 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
           }
         }
       }
-      maxPassDepth = Math.max(maxPassDepth, cutCycleDeepestDepth - previousDepth);
+      if (cutCyclePlateauDepths.length) {
+        let priorDepth = previousDepth;
+        for (const plateauDepth of cutCyclePlateauDepths) {
+          if (plateauDepth > priorDepth + EPSILON) {
+            maxPassDepth = Math.max(maxPassDepth, plateauDepth - priorDepth);
+            priorDepth = plateauDepth;
+          }
+        }
+        // Preserve the conservative fallback if a cycle ends with a plunge or
+        // ramp that never settles onto a constant-Z cutting segment.
+        maxPassDepth = Math.max(maxPassDepth, cutCycleDeepestDepth - priorDepth);
+      } else {
+        maxPassDepth = Math.max(maxPassDepth, cutCycleDeepestDepth - previousDepth);
+      }
       for (const [key, depth] of cutCyclePlateaus) {
         deepestPlateauByPoint.set(key, Math.max(deepestPlateauByPoint.get(key) ?? 0, depth));
       }
@@ -490,6 +505,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     cutCycleDeepestDepth = 0;
     cutCycleSawPlateau = false;
     cutCyclePlateaus = new Map<string, number>();
+    cutCyclePlateauDepths = [];
   };
   const beginCutCycle = (from: Point3, to: Point3) => {
     let entry = from;
@@ -505,6 +521,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     cutCycleDeepestDepth = cutCycleBaselineDepth;
     cutCycleSawPlateau = false;
     cutCyclePlateaus = new Map<string, number>();
+    cutCyclePlateauDepths = [];
     cutCycleActive = true;
   };
   const recordCutSegment = (from: Point3, to: Point3, horizontalDistance: number) => {
@@ -518,6 +535,10 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     const isCuttingPlateau = horizontalDistance > EPSILON && Math.abs(to.z - from.z) <= EPSILON;
     if (!isCuttingPlateau || deepestDepth <= EPSILON) return;
     cutCycleSawPlateau = true;
+    const deepestRecordedPlateau = cutCyclePlateauDepths.at(-1) ?? cutCycleBaselineDepth;
+    if (deepestDepth > deepestRecordedPlateau + EPSILON) {
+      cutCyclePlateauDepths.push(deepestDepth);
+    }
     for (const point of [from, to]) {
       const key = cutPointKey(point);
       cutCyclePlateaus.set(key, Math.max(cutCyclePlateaus.get(key) ?? 0, deepestDepth));
@@ -849,12 +870,12 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     const allowedMaxX = effectiveStock.x + effectiveStock.width + cutterRadius;
     const allowedMinY = effectiveStock.y - cutterRadius;
     const allowedMaxY = effectiveStock.y + effectiveStock.height + cutterRadius;
-    const stockOutside = cutCenterMinX < allowedMinX - EPSILON
-      || cutCenterMinY < allowedMinY - EPSILON
-      || cutCenterMaxX > allowedMaxX + EPSILON
-      || cutCenterMaxY > allowedMaxY + EPSILON;
-    const fitsStock = stockZeroRange.x.min <= stockZeroRange.x.max
-      && stockZeroRange.y.min <= stockZeroRange.y.max;
+    const stockOutside = cutCenterMinX < allowedMinX - STOCK_ENVELOPE_TOLERANCE_INCHES
+      || cutCenterMinY < allowedMinY - STOCK_ENVELOPE_TOLERANCE_INCHES
+      || cutCenterMaxX > allowedMaxX + STOCK_ENVELOPE_TOLERANCE_INCHES
+      || cutCenterMaxY > allowedMaxY + STOCK_ENVELOPE_TOLERANCE_INCHES;
+    const fitsStock = stockZeroRange.x.min <= stockZeroRange.x.max + STOCK_ENVELOPE_TOLERANCE_INCHES
+      && stockZeroRange.y.min <= stockZeroRange.y.max + STOCK_ENVELOPE_TOLERANCE_INCHES;
     if (!fitsStock) {
       issues.push(issue("warning", "bounds", "stock-envelope-too-large", "Cutting path is larger than the stock allowance", `No work-zero position can fit the tool centerline within the ${formatInches(effectiveStock.width)} × ${formatInches(effectiveStock.height)} stock plus ${formatInches(cutterRadius)} of cutter-radius overhang on each edge.`, {
         recommendation: "Confirm the stock position and dimensions, cutter diameter, and whether the cut intentionally exceeds the stock by more than one cutter radius.",
