@@ -12,7 +12,7 @@ Drop in a part file to get an interactive 3D toolpath, machine- and stock-envelo
 - EBMC machine travel limits: X −0.5…96.5, Y −0.5…48.5, Z −2…8 inches
 - machine-coordinate work-zero placement against machine travel, including negative file coordinates
 - configurable rectangular stock position and size, with cutter-radius overhang allowance and stock-safe work-zero ranges
-- rapid moves that enter material, Z travel, cut-through, and spoilboard allowance
+- rapid moves that enter material, Z travel, and cuts more than 0.02 inches beneath the modeled stock
 - absolute mode, explicit units, move speeds, spindle RPM, spindle sequencing, and software limit-check commands
 - unexpected machine-global setting commands
 - chip load (`feed / (RPM × flutes)`) with material, cutter, and pass-depth adjustment

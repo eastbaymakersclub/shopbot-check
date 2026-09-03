@@ -169,6 +169,36 @@ describe("OpenSBP static analyzer", () => {
     expect(result.issues.find((item) => item.id === "metric-units")?.severity).toBe("error");
   });
 
+  it.each([
+    { zOrigin: "top" as const, stockSurface: 0 },
+    { zOrigin: "table" as const, stockSurface: DEFAULT_CONFIG.stock.thickness },
+  ])("rejects cutting more than 0.02 inches beneath stock with $zOrigin Z zero", ({ zOrigin, stockSurface }) => {
+    const sourceAtDepth = (depth: number) => [
+      "' ROUTER FILE IN INCHES",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      `JZ, ${(stockSurface + 0.25).toFixed(8)}`,
+      "J2, 1, 1",
+      `M3, 1, 1, ${(stockSurface - depth).toFixed(8)}`,
+      "C7",
+      "END",
+    ].join("\n");
+    const config = {
+      ...DEFAULT_CONFIG,
+      stock: { ...DEFAULT_CONFIG.stock, zOrigin },
+    };
+    const allowedDepth = DEFAULT_CONFIG.stock.thickness + 0.02;
+    const excessiveDepth = DEFAULT_CONFIG.stock.thickness + 0.0201;
+    const allowed = analyzeProgram("allowed-cut-through.sbp", sourceAtDepth(allowedDepth), config);
+    const excessive = analyzeProgram("excessive-cut-through.sbp", sourceAtDepth(excessiveDepth), config);
+
+    expect(allowed.stats.maximumDepth).toBeCloseTo(allowedDepth, 6);
+    expect(allowed.issues.find((item) => item.id === "stock-cut-depth")?.severity).toBe("pass");
+    expect(excessive.issues.find((item) => item.id === "stock-cut-depth")?.severity).toBe("error");
+  });
+
   it("measures repeated Fusion-style contours by incremental pass depth", () => {
     const passes = [-0.125, -0.25, -0.375, -0.5, -0.625]
       .flatMap((depth) => [

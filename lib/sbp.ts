@@ -42,7 +42,6 @@ export interface AnalysisConfig {
   stock: StockConfig;
   cutter: CutterPreset;
   workOffset: { x: number; y: number };
-  spoilboardAllowance: number;
 }
 
 export interface Point3 { x: number; y: number; z: number }
@@ -146,6 +145,7 @@ export interface AnalysisResult {
 
 const MAX_LINES = 500_000;
 const EPSILON = 1e-7;
+const MAX_STOCK_CUT_THROUGH_INCHES = 0.02;
 const GLOBAL_SETTING_COMMANDS = new Set(["VL", "VU", "VI", "VN", "VA", "ST", "VO", "VD"]);
 const KNOWN_COMMANDS = new Set(["SA", "CN", "C6", "C7", "C9", "TR", "MS", "PAUSE", "JZ", "J2", "J3", "M2", "M3", "CG", "END", "SF"]);
 
@@ -259,7 +259,7 @@ function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata 
   const unitScale = units === "mm" ? 1 / 25.4 : 1;
   const detectedTool = detectToolFromSource(text);
   const rawOrigin = text.match(/^\s*&PWZorigin\s*=\s*([^\r\n']+)/im)?.[1]?.trim() ?? "";
-  const isTableOrigin = /table|bed/i.test(rawOrigin);
+  const zOrigin = rawOrigin ? (/table|bed/i.test(rawOrigin) ? "table" : "top") : config.stock.zOrigin;
   const toolNumber = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im);
   const thickness = firstNumber(text, /^\s*&PWMaterial\s*=\s*(-?\d+(?:\.\d+)?)/im)
     ?? firstNumber(text, /Depth of material in Z\s*=\s*(-?\d+(?:\.\d+)?)/i);
@@ -275,7 +275,7 @@ function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata 
     materialWidth: width === null ? null : width * unitScale,
     materialHeight: height === null ? null : height * unitScale,
     safeZ: safeZ === null ? null : safeZ * unitScale,
-    zOrigin: isTableOrigin ? "table" : "top",
+    zOrigin,
     toolName: detectedTool.name,
     toolDiameter: detectedTool.diameter,
     toolNumber: toolNumber === null ? null : Math.round(toolNumber),
@@ -636,6 +636,7 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
 
   const bounds = finiteBounds(programBounds);
   const cutBounds = Number.isFinite(cuttingBounds.minX) ? finiteBounds(cuttingBounds) : null;
+  const maximumDepth = cutBounds ? Math.max(0, stockSurface - cutBounds.minZ) : 0;
   // File metadata is copied into the editable cutter configuration when a file
   // is loaded. From that point on, the configuration is the source of truth so
   // an operator can correct or intentionally override the embedded values.
@@ -765,11 +766,20 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
       recommendation: "Confirm stock thickness and the Z-zero convention before running the file.",
     }));
   }
-  if (bounds.minZ < stockBottom - config.spoilboardAllowance - EPSILON) {
-    const overcut = stockBottom - bounds.minZ;
-    issues.push(issue(overcut > 0.25 ? "error" : "warning", "bounds", "spoilboard-depth", "Cut extends beneath the allowed stock depth", `The lowest Z is ${formatInches(overcut)} below the modeled stock bottom; allowance is ${formatInches(config.spoilboardAllowance)}.`, {
-      recommendation: "Confirm stock thickness, Z-zero convention, and intended spoilboard cut-through.",
-    }));
+  if (cutBounds) {
+    const stockCutThrough = Math.max(0, stockBottom - cutBounds.minZ);
+    const deepestCutLine = segments.find((segment) => segment.kind === "move" && segment.engaged
+      && (Math.abs(segment.from.z - cutBounds.minZ) <= EPSILON || Math.abs(segment.to.z - cutBounds.minZ) <= EPSILON))?.line;
+    if (stockCutThrough > MAX_STOCK_CUT_THROUGH_INCHES + EPSILON) {
+      issues.push(issue("error", "bounds", "stock-cut-depth", "Cut depth exceeds stock thickness by more than 0.02″", `The deepest engaged cutting move is ${formatInches(maximumDepth)} deep against ${formatInches(effectiveStock.thickness)} modeled stock, reaching ${formatInches(stockCutThrough)} below its bottom. The maximum allowed cut-through is ${formatInches(MAX_STOCK_CUT_THROUGH_INCHES)}.`, {
+        line: deepestCutLine,
+        recommendation: "Confirm the modeled stock thickness, Z-zero convention, and programmed cut depth before running the file.",
+      }));
+    } else {
+      issues.push(issue("pass", "bounds", "stock-cut-depth", "Cut depth stays within the stock allowance", stockCutThrough > EPSILON
+        ? `The deepest engaged cutting move is ${formatInches(maximumDepth)} deep and reaches ${formatInches(stockCutThrough)} below the modeled stock bottom, within the ${formatInches(MAX_STOCK_CUT_THROUGH_INCHES)} allowance.`
+        : `The deepest engaged cutting move is ${formatInches(maximumDepth)} deep and does not pass the modeled stock bottom.`));
+    }
   }
 
   if (!metadata.toolName) {
@@ -785,7 +795,6 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
 
   const engagedHorizontal = segments.filter((segment) => segment.kind === "move" && segment.engaged && Math.hypot(segment.to.x - segment.from.x, segment.to.y - segment.from.y) > EPSILON);
   const maxFeedIps = engagedHorizontal.length ? Math.max(...engagedHorizontal.map((segment) => segment.feedIps)) : null;
-  const maximumDepth = Math.max(0, stockSurface - bounds.minZ);
   const passRatio = cutterDiameter > EPSILON ? maxPassDepth / cutterDiameter : 0;
   const depthModifier = passRatio <= 1 ? 1 : passRatio >= 3 ? 0.5 : 1 - (passRatio - 1) * 0.25;
   const adjustedRange = {

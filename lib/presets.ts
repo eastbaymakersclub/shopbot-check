@@ -109,5 +109,4 @@ export const DEFAULT_CONFIG: AnalysisConfig = {
   stock: STOCK_PRESETS[0],
   cutter: CUTTER_PRESETS[0],
   workOffset: { x: 0, y: 0 },
-  spoilboardAllowance: 0.05,
 };
