@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { AnalysisConfig, AnalysisResult } from "../lib/sbp";
-import { mapShopBotPoint, mapShopBotY } from "../lib/viewer-coordinates";
+import { mapShopBotPoint, mapShopBotY, segmentExceedsMachineTravel } from "../lib/viewer-coordinates";
 
 export type ViewerMode = "orbit" | "top" | "machine";
 
@@ -69,9 +69,9 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
       new THREE.MeshBasicMaterial({ color: 0xa9864f, transparent: true, opacity: 0.08, depthWrite: false }),
     );
     stockMesh.position.set(
-      stock.width / 2 + config.workOffset.x,
+      stock.width / 2,
       stockSurface - stock.thickness / 2,
-      mapShopBotY(stock.height / 2, config.workOffset.y),
+      mapShopBotY(stock.height / 2),
     );
     scene.add(stockMesh);
     const stockEdges = new THREE.LineSegments(
@@ -91,14 +91,7 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
           ...mapShopBotPoint(segment.from, config.workOffset),
           ...mapShopBotPoint(segment.to, config.workOffset),
         );
-        const fromX = segment.from.x + config.workOffset.x;
-        const toX = segment.to.x + config.workOffset.x;
-        const fromY = segment.from.y + config.workOffset.y;
-        const toY = segment.to.y + config.workOffset.y;
-        const outside = Math.min(fromX, toX) < machineLimit.x.min
-          || Math.max(fromX, toX) > machineLimit.x.max
-          || Math.min(fromY, toY) < machineLimit.y.min
-          || Math.max(fromY, toY) > machineLimit.y.max;
+        const outside = segmentExceedsMachineTravel(segment.from, segment.to, config.workOffset, machineLimit);
         if (segment.line === selectedLine || outside) color.setHex(0xff3531);
         else if (segment.kind === "jog") color.setHex(0xf4a80c);
         else if (segment.engaged) color.setHex(segment.arc ? 0xb8ff62 : 0x4fd063);

@@ -196,6 +196,14 @@ export function ShopbotApp() {
     : result
       ? `Only Tool ${result.metadata.toolNumber ?? "number"} was embedded; confirm the cutter preset.`
       : "Reads exact VirtualCut Fusion metadata, V-Carve tool names, and Fusion &ToolName comments.";
+  const machineExtent = result ? {
+    x: { min: result.bounds.minX + config.workOffset.x, max: result.bounds.maxX + config.workOffset.x },
+    y: { min: result.bounds.minY + config.workOffset.y, max: result.bounds.maxY + config.workOffset.y },
+  } : null;
+  const machineZeroOutside = Boolean(result?.issues.some((item) => item.id === "current-zero-outside" || item.id === "path-too-large"));
+  const stockZeroOutside = Boolean(result?.issues.some((item) => (
+    (item.id === "stock-envelope" && item.severity !== "pass") || item.id === "stock-envelope-too-large"
+  )));
 
   return (
     <main className="app-shell">
@@ -235,7 +243,7 @@ export function ShopbotApp() {
             <div className="stage-legend">
               <span><i className="legend-cut" /> Cutting move</span>
               <span><i className="legend-jog" /> Jog move</span>
-              <span><i className="legend-alert" /> Violation / selected</span>
+              <span><i className="legend-alert" /> Outside machine / selected</span>
             </div>
             <div className="stage-stats">
               <span>{result?.stats.moveCount.toLocaleString() ?? "—"}<small>moves</small></span>
@@ -275,8 +283,9 @@ export function ShopbotApp() {
               <label><span>Z zero</span><select value={config.stock.zOrigin} onChange={(event) => updateStock({ zOrigin: event.target.value as StockConfig["zOrigin"] })}><option value="top">Stock surface</option><option value="table">Table surface</option></select></label>
               <label><span>Stock X (in)</span><input type="number" min="0.01" step="0.1" value={config.stock.width} onChange={(event) => updateStock({ width: updateNumber(event.target.value, config.stock.width) })} /></label>
               <label><span>Stock Y (in)</span><input type="number" min="0.01" step="0.1" value={config.stock.height} onChange={(event) => updateStock({ height: updateNumber(event.target.value, config.stock.height) })} /></label>
-              <label><span>Table-base X zero</span><input type="number" step="0.01" value={config.workOffset.x} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, x: updateNumber(event.target.value) } }))} /></label>
-              <label><span>Table-base Y zero</span><input type="number" step="0.01" value={config.workOffset.y} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, y: updateNumber(event.target.value) } }))} /></label>
+              <label><span>Table-base X zero (in)</span><input type="number" step="0.01" value={config.workOffset.x} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, x: updateNumber(event.target.value) } }))} /></label>
+              <label><span>Table-base Y zero (in)</span><input type="number" step="0.01" value={config.workOffset.y} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, y: updateNumber(event.target.value) } }))} /></label>
+              <p className="setup-help wide">Enter where the file’s X0, Y0 will sit in table coordinates. The stock model assumes its lower-left corner is at table X0, Y0.</p>
             </div>
           </details>
 
@@ -306,14 +315,21 @@ export function ShopbotApp() {
               <div className="count-pills"><span className="error">{issueCounts.error}</span><span className="warning">{issueCounts.warning}</span></div>
             </div>
 
-            <div className="extent-heading"><strong>Program envelope</strong><small>All positions are relative to the file’s working zero.</small></div>
+            <div className="extent-heading"><strong>Program & machine envelope</strong><small>Machine positions include the entered table-base work zero.</small></div>
             <div className="extent-grid">
-              <div><small>X extent</small><strong>{result ? formatExtent(result.bounds.minX, result.bounds.maxX) : "—"}</strong></div>
-              <div><small>Y extent</small><strong>{result ? formatExtent(result.bounds.minY, result.bounds.maxY) : "—"}</strong></div>
+              <div><small>File X extent</small><strong>{result ? formatExtent(result.bounds.minX, result.bounds.maxX) : "—"}</strong></div>
+              <div><small>File Y extent</small><strong>{result ? formatExtent(result.bounds.minY, result.bounds.maxY) : "—"}</strong></div>
+              <div><small>Machine X position</small><strong>{machineExtent ? formatExtent(machineExtent.x.min, machineExtent.x.max) : "—"}</strong></div>
+              <div><small>Machine Y position</small><strong>{machineExtent ? formatExtent(machineExtent.y.min, machineExtent.y.max) : "—"}</strong></div>
               <div><small>Z extent</small><strong>{result ? formatExtent(result.bounds.minZ, result.bounds.maxZ) : "—"}</strong></div>
-              <div className={result && (result.bounds.minX < 0 || result.bounds.minY < 0) ? "origin-shift" : ""}>
-                <small>Allowed table-base zero</small>
+              <div><small>Entered table-base zero</small><strong>X {config.workOffset.x.toFixed(2)} · Y {config.workOffset.y.toFixed(2)} in</strong></div>
+              <div className={machineZeroOutside ? "origin-shift" : ""}>
+                <small>Machine-safe zero</small>
                 <strong>{result ? `X ${result.zeroRange.x.min.toFixed(2)}…${result.zeroRange.x.max.toFixed(2)} · Y ${result.zeroRange.y.min.toFixed(2)}…${result.zeroRange.y.max.toFixed(2)}` : "—"}</strong>
+              </div>
+              <div className={stockZeroOutside ? "stock-shift" : ""}>
+                <small>Stock-safe zero</small>
+                <strong>{result?.zeroRange.stock ? `X ${result.zeroRange.stock.x.min.toFixed(2)}…${result.zeroRange.stock.x.max.toFixed(2)} · Y ${result.zeroRange.stock.y.min.toFixed(2)}…${result.zeroRange.stock.y.max.toFixed(2)}` : "—"}</strong>
               </div>
             </div>
           </div>

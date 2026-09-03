@@ -10,8 +10,8 @@ Drop in a part file to get an interactive 3D toolpath, machine- and stock-envelo
 
 - 3D move, jog, and arc visualization with selectable findings
 - EBMC machine travel limits: X −0.5…96.5, Y −0.5…48.5, Z −2…8 inches
-- valid table-base XY-zero ranges and negative-coordinate stock inset warnings
-- cutter envelope versus configured stock dimensions
+- table-base work-zero placement against machine travel, including negative file coordinates
+- cutter envelope versus configured stock dimensions, with stock-safe XY-zero ranges
 - rapid moves that enter material, Z travel, cut-through, and spoilboard allowance
 - absolute mode, explicit units, move speeds, spindle RPM, spindle sequencing, and software limit-check commands
 - unexpected machine-global setting commands

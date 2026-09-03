@@ -92,6 +92,7 @@ button { color: inherit; }
 .setup-fields input, .setup-fields select { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid rgba(104,113,109,.48); outline: none; color: var(--paper); background: var(--panel-high); border-radius: 6px; font-size: 10px; }
 .setup-fields input:focus, .setup-fields select:focus { border-color: var(--green); box-shadow: 0 0 0 2px rgba(79,208,99,.11); }
 .tool-detection { margin: -1px 0 2px; color: var(--blue); font: 8px/1.5 var(--font-geist-mono), monospace; }
+.setup-help { margin: -1px 0 2px; color: var(--muted); font: 8px/1.5 var(--font-geist-mono), monospace; }
 .detected-settings { margin-top: auto; padding: 12px 16px; display: grid; gap: 8px; border-top: 1px solid rgba(104,113,109,.25); background: rgba(9,13,12,.42); }
 .detected-settings span { display: flex; justify-content: space-between; gap: 14px; }
 .detected-settings small { color: var(--muted); font-size: 9px; }
@@ -127,6 +128,8 @@ button { color: inherit; }
 .extent-grid strong { font: 10px/1.4 var(--font-geist-mono), monospace; }
 .extent-grid .origin-shift { background: rgba(255,53,49,.055); }
 .extent-grid .origin-shift strong { color: #ff7d79; }
+.extent-grid .stock-shift { background: rgba(244,168,12,.055); }
+.extent-grid .stock-shift strong { color: var(--amber); }
 
 .preflight-review { min-width: 0; }
 .preflight-heading { min-height: 48px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }

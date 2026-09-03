@@ -111,11 +111,25 @@ describe("OpenSBP static analyzer", () => {
     expect(result.issues.find((item) => item.id === "rapid-in-stock")?.severity).toBe("error");
   });
 
-  it("calculates a safe table-base zero range for negative coordinates", () => {
-    const result = analyzeProgram("unsafe-bounds.sbp", fixture("unsafe-bounds.sbp"), DEFAULT_CONFIG);
+  it("uses table-base work zero to validate negative coordinates against machine and stock", () => {
+    const source = fixture("unsafe-bounds.sbp");
+    const result = analyzeProgram("unsafe-bounds.sbp", source, DEFAULT_CONFIG);
+    const positioned = analyzeProgram("unsafe-bounds.sbp", source, {
+      ...DEFAULT_CONFIG,
+      workOffset: { x: 1.25, y: 1 },
+    });
+
     expect(result.bounds.minX).toBe(-1);
     expect(result.zeroRange.x.min).toBeCloseTo(0.5);
-    expect(result.issues.some((item) => item.id === "negative-coordinates")).toBe(true);
+    expect(result.zeroRange.stock?.x.min).toBeCloseTo(1.25);
+    expect(result.issues.find((item) => item.id === "current-zero-outside")?.severity).toBe("error");
+    expect(result.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
+    expect(result.issues.some((item) => item.id === "negative-coordinates")).toBe(false);
+
+    expect(positioned.issues.some((item) => item.id === "current-zero-outside")).toBe(false);
+    expect(positioned.issues.find((item) => item.id === "machine-envelope")?.severity).toBe("pass");
+    expect(positioned.issues.find((item) => item.id === "negative-coordinates-positioned")?.severity).toBe("pass");
+    expect(positioned.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
   });
 
   it("fails closed when a construct is unsupported", () => {

@@ -138,7 +138,7 @@ export interface AnalysisResult {
   zeroRange: {
     x: AxisLimit;
     y: AxisLimit;
-    recommendedStockInset: { x: number; y: number };
+    stock: { x: AxisLimit; y: AxisLimit } | null;
   };
 }
 
@@ -640,13 +640,20 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   const cutterDiameter = config.cutter.diameter;
   const cutterFlutes = config.cutter.flutes;
   const cutterRadius = cutterDiameter / 2;
+  const stockZeroRange = cutBounds ? {
+    x: {
+      min: cutterRadius - cutBounds.minX,
+      max: effectiveStock.width - cutterRadius - cutBounds.maxX,
+    },
+    y: {
+      min: cutterRadius - cutBounds.minY,
+      max: effectiveStock.height - cutterRadius - cutBounds.maxY,
+    },
+  } : null;
   const zeroRange = {
     x: { min: config.machine.limits.x.min - bounds.minX, max: config.machine.limits.x.max - bounds.maxX },
     y: { min: config.machine.limits.y.min - bounds.minY, max: config.machine.limits.y.max - bounds.maxY },
-    recommendedStockInset: {
-      x: Math.max(0, cutterRadius - (cutBounds?.minX ?? bounds.minX)),
-      y: Math.max(0, cutterRadius - (cutBounds?.minY ?? bounds.minY)),
-    },
+    stock: stockZeroRange,
   };
 
   if (metadata.unitsSource === "machine-default") {
@@ -708,24 +715,36 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   if (zeroRange.x.min > zeroRange.x.max || zeroRange.y.min > zeroRange.y.max) {
     issues.push(issue("error", "bounds", "path-too-large", "Toolpath is larger than the machine envelope", "No XY zero position can place every movement inside the configured machine limits."));
   } else if (outsideX || outsideY) {
-    issues.push(issue("error", "bounds", "current-zero-outside", "Current XY zero placement exceeds machine limits", `With X zero at ${formatInches(config.workOffset.x)} and Y zero at ${formatInches(config.workOffset.y)}, movement reaches ${formatInches(machineMinX)}…${formatInches(machineMaxX)} X and ${formatInches(machineMinY)}…${formatInches(machineMaxY)} Y.`, {
+    issues.push(issue("error", "bounds", "current-zero-outside", "Work zero places movement outside machine travel", `With table-base X zero at ${formatInches(config.workOffset.x)} and Y zero at ${formatInches(config.workOffset.y)}, the tool center reaches ${formatInches(machineMinX)}…${formatInches(machineMaxX)} X and ${formatInches(machineMinY)}…${formatInches(machineMaxY)} Y.`, {
       recommendation: `Place X zero between ${formatInches(zeroRange.x.min)} and ${formatInches(zeroRange.x.max)}, and Y zero between ${formatInches(zeroRange.y.min)} and ${formatInches(zeroRange.y.max)} in table-base coordinates.`,
     }));
+  } else {
+    issues.push(issue("pass", "bounds", "machine-envelope", "Toolpath fits machine travel", `At the entered work zero, the tool center stays within the configured X and Y travel limits.`));
   }
-  if (bounds.minX < -EPSILON || bounds.minY < -EPSILON) {
-    issues.push(issue("warning", "bounds", "negative-coordinates", "Toolpath contains negative XY coordinates", `The cutter center reaches X ${formatInches(bounds.minX)} and Y ${formatInches(bounds.minY)} relative to the working zero.`, {
-      recommendation: `For a lower-left stock origin, inset the zero by at least X ${formatInches(zeroRange.recommendedStockInset.x)} and Y ${formatInches(zeroRange.recommendedStockInset.y)} to include cutter radius.`,
-    }));
+  if ((bounds.minX < -EPSILON || bounds.minY < -EPSILON) && !outsideX && !outsideY) {
+    issues.push(issue("pass", "bounds", "negative-coordinates-positioned", "Negative coordinates are safely positioned", `The file reaches X ${formatInches(bounds.minX)} and Y ${formatInches(bounds.minY)} relative to work zero, but the entered table-base zero keeps those moves inside machine travel.`));
   }
-  if (cutBounds) {
-    const stockOutside = cutBounds.minX - cutterRadius < -EPSILON
-      || cutBounds.minY - cutterRadius < -EPSILON
-      || cutBounds.maxX + cutterRadius > effectiveStock.width + EPSILON
-      || cutBounds.maxY + cutterRadius > effectiveStock.height + EPSILON;
-    if (stockOutside) {
-      issues.push(issue("warning", "bounds", "stock-envelope", "Cutting edge extends outside the modeled stock", `The ${formatInches(cutterDiameter)} cutter envelope is larger than the ${formatInches(effectiveStock.width)} × ${formatInches(effectiveStock.height)} stock model at the current origin.`, {
-        recommendation: "Confirm the intended stock origin and dimensions before running.",
+  if (cutBounds && stockZeroRange) {
+    const cutterMinX = cutBounds.minX + config.workOffset.x - cutterRadius;
+    const cutterMaxX = cutBounds.maxX + config.workOffset.x + cutterRadius;
+    const cutterMinY = cutBounds.minY + config.workOffset.y - cutterRadius;
+    const cutterMaxY = cutBounds.maxY + config.workOffset.y + cutterRadius;
+    const stockOutside = cutterMinX < -EPSILON
+      || cutterMinY < -EPSILON
+      || cutterMaxX > effectiveStock.width + EPSILON
+      || cutterMaxY > effectiveStock.height + EPSILON;
+    const fitsStock = stockZeroRange.x.min <= stockZeroRange.x.max
+      && stockZeroRange.y.min <= stockZeroRange.y.max;
+    if (!fitsStock) {
+      issues.push(issue("warning", "bounds", "stock-envelope-too-large", "Cutting envelope is larger than the modeled stock", `No work-zero position can fit the ${formatInches(cutterDiameter)} cutter envelope inside the ${formatInches(effectiveStock.width)} × ${formatInches(effectiveStock.height)} stock.`, {
+        recommendation: "Confirm the stock dimensions, cutter diameter, and whether the cut is intentionally allowed to overhang the stock.",
       }));
+    } else if (stockOutside) {
+      issues.push(issue("warning", "bounds", "stock-envelope", "Work zero places cutting outside the modeled stock", `The cutter edge reaches table X ${formatInches(cutterMinX)}…${formatInches(cutterMaxX)} and Y ${formatInches(cutterMinY)}…${formatInches(cutterMaxY)}; modeled stock spans X 0…${formatInches(effectiveStock.width)} and Y 0…${formatInches(effectiveStock.height)}.`, {
+        recommendation: `Assuming the stock’s lower-left corner is at table X0, Y0, place X zero between ${formatInches(stockZeroRange.x.min)} and ${formatInches(stockZeroRange.x.max)}, and Y zero between ${formatInches(stockZeroRange.y.min)} and ${formatInches(stockZeroRange.y.max)}.`,
+      }));
+    } else {
+      issues.push(issue("pass", "bounds", "stock-envelope", "Cutting edge stays within modeled stock", "The entered work zero keeps the full cutter diameter inside the modeled stock."));
     }
   }
   const zTravel = bounds.maxZ - bounds.minZ;
