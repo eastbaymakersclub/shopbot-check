@@ -52,9 +52,9 @@ export function FusionPostBuilder() {
       <div className="fusion-post-copy">
         <p className="eyebrow">Fusion integration</p>
         <h2>Set up Fusion for EBMC and VirtualCut</h2>
-        <p>Start with EBMC’s shared cutter library, then use the EBMC post patch to put exact tool data in every ShopBot file. VirtualCut reads the added comments automatically; ShopBot ignores them.</p>
+        <p>Start with EBMC’s shared cutter library, then use the EBMC post patch to put exact tool data, modeled stock bounds, and the post version in every ShopBot file. VirtualCut reads the added comments automatically; ShopBot ignores them.</p>
         <div className="fusion-post-fields" aria-label="Embedded Fusion fields">
-          <span>Diameter</span><span>Flutes</span><span>Geometry</span><span>Vendor / ID</span>
+          <span>Diameter</span><span>Flutes</span><span>Geometry</span><span>Vendor / ID</span><span>Stock size / offset</span><span>Post version</span>
         </div>
       </div>
       <div className="fusion-post-actions">

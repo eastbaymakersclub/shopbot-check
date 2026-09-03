@@ -7,11 +7,14 @@ import type { ViewerMode } from "../components/ToolpathViewer";
 import { FusionPostBuilder } from "../components/FusionPostBuilder";
 import { CUTTER_PRESETS, DEFAULT_CONFIG, STOCK_PRESETS } from "../lib/presets";
 import {
+  detectProgramMetadata,
   detectToolFromSource,
+  stockConfigFromMetadata,
   type AnalysisConfig,
   type AnalysisIssue,
   type AnalysisResult,
   type CutterPreset,
+  type ProgramMetadata,
   type Severity,
   type StockConfig,
 } from "../lib/sbp";
@@ -88,6 +91,8 @@ export function ShopbotApp() {
   const [dragging, setDragging] = useState(false);
   const [selectedIssue, setSelectedIssue] = useState<string | null>(null);
   const [viewerMode, setViewerMode] = useState<ViewerMode>("orbit");
+  const [detectedStockMetadata, setDetectedStockMetadata] = useState<ProgramMetadata | null>(null);
+  const [stockPositionFromFile, setStockPositionFromFile] = useState(false);
 
   useEffect(() => {
     const worker = new AnalyzerWorker();
@@ -143,9 +148,18 @@ export function ShopbotApp() {
       return;
     }
     const text = await file.text();
+    const detectedMetadata = detectProgramMetadata(text, config);
+    setDetectedStockMetadata(detectedMetadata);
+    setStockPositionFromFile(detectedMetadata.stockCoordinateSpace === "work"
+      && (detectedMetadata.stockMinX !== null || detectedMetadata.stockMinY !== null));
     setConfig((current) => {
+      const metadata = detectProgramMetadata(text, current);
       const detectedCutter = cutterPresetFromSource(text, current.cutter);
-      return detectedCutter ? { ...current, cutter: detectedCutter } : current;
+      return {
+        ...current,
+        cutter: detectedCutter ?? current.cutter,
+        stock: stockConfigFromMetadata(current.stock, metadata, current.workOffset),
+      };
     });
     setError(null);
     setBusy(true);
@@ -187,7 +201,26 @@ export function ShopbotApp() {
   };
 
   const updateStock = (patch: Partial<StockConfig>) => {
+    if (Object.prototype.hasOwnProperty.call(patch, "x") || Object.prototype.hasOwnProperty.call(patch, "y")) {
+      setStockPositionFromFile(false);
+    }
     setConfig((current) => ({ ...current, stock: { ...current.stock, ...patch } }));
+  };
+
+  const updateWorkOffset = (patch: Partial<AnalysisConfig["workOffset"]>) => {
+    setConfig((current) => {
+      const workOffset = { ...current.workOffset, ...patch };
+      const followsFusionStock = stockPositionFromFile && detectedStockMetadata?.stockCoordinateSpace === "work";
+      return {
+        ...current,
+        workOffset,
+        stock: followsFusionStock ? {
+          ...current.stock,
+          x: detectedStockMetadata.stockMinX === null ? current.stock.x : workOffset.x + detectedStockMetadata.stockMinX,
+          y: detectedStockMetadata.stockMinY === null ? current.stock.y : workOffset.y + detectedStockMetadata.stockMinY,
+        } : current.stock,
+      };
+    });
   };
 
   const hasCutterOverride = Boolean(result && (
@@ -199,6 +232,23 @@ export function ShopbotApp() {
     : result
       ? `Only Tool ${result.metadata.toolNumber ?? "number"} was embedded; confirm the cutter preset.`
       : "Reads exact VirtualCut Fusion metadata, V-Carve tool names, and Fusion &ToolName comments.";
+  const stockDimensions = result
+    && result.metadata.materialWidth !== null
+    && result.metadata.materialHeight !== null
+    && result.metadata.materialThickness !== null
+    ? `${result.metadata.materialWidth.toFixed(3)} × ${result.metadata.materialHeight.toFixed(3)} × ${result.metadata.materialThickness.toFixed(3)} in`
+    : null;
+  const stockPosition = result
+    && result.metadata.stockCoordinateSpace === "work"
+    && result.metadata.stockMinX !== null
+    && result.metadata.stockMinY !== null
+    ? `lower-left ${result.metadata.stockMinX.toFixed(3)}, ${result.metadata.stockMinY.toFixed(3)} in from work zero`
+    : null;
+  const stockDetectionText = result?.metadata.stockSource
+    ? `${result.metadata.stockSource === "fusion" ? "Fusion" : result.metadata.stockSource === "vectric" ? "V-Carve / Vectric" : "SBP"} stock metadata: ${[stockDimensions, stockPosition].filter(Boolean).join(" · ") || "partial stock settings"} · Loaded into Job setup${stockPositionFromFile ? " and follows the entered work zero" : ""}.`
+    : result
+      ? "No full stock model was embedded; confirm the stock size and machine position."
+      : "The current VirtualCut Fusion post fills in rectangular stock size, thickness, Z zero, and its offset from work zero.";
   const machineExtent = result ? {
     x: { min: result.bounds.minX + config.workOffset.x, max: result.bounds.maxX + config.workOffset.x },
     y: { min: result.bounds.minY + config.workOffset.y, max: result.bounds.maxY + config.workOffset.y },
@@ -282,8 +332,8 @@ export function ShopbotApp() {
               <label><span>Flutes</span><input type="number" min="1" max="8" step="1" value={config.cutter.flutes} onChange={(event) => updateCutter({ flutes: Math.max(1, Math.round(updateNumber(event.target.value, config.cutter.flutes))) })} /></label>
               <p className="tool-detection wide">{toolDetectionText}</p>
               <label className="wide"><span>Z zero</span><select value={config.stock.zOrigin} onChange={(event) => updateStock({ zOrigin: event.target.value as StockConfig["zOrigin"] })}><option value="top">Stock surface</option><option value="table">Table surface</option></select></label>
-              <label><span>Machine X at work zero (in)</span><input type="number" step="0.01" value={config.workOffset.x} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, x: updateNumber(event.target.value) } }))} /></label>
-              <label><span>Machine Y at work zero (in)</span><input type="number" step="0.01" value={config.workOffset.y} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, y: updateNumber(event.target.value) } }))} /></label>
+              <label><span>Machine X at work zero (in)</span><input type="number" step="0.01" value={config.workOffset.x} onChange={(event) => updateWorkOffset({ x: updateNumber(event.target.value) })} /></label>
+              <label><span>Machine Y at work zero (in)</span><input type="number" step="0.01" value={config.workOffset.y} onChange={(event) => updateWorkOffset({ y: updateNumber(event.target.value) })} /></label>
               <p className="setup-help wide">Enter the machine coordinates where the file’s X0, Y0 will be set.</p>
               <details className="stock-placement wide">
                 <summary>
@@ -291,6 +341,7 @@ export function ShopbotApp() {
                   <small>{config.stock.material} · X {config.stock.x.toFixed(2)} · Y {config.stock.y.toFixed(2)} · {config.stock.width.toFixed(2)} × {config.stock.height.toFixed(2)} × {config.stock.thickness.toFixed(3)} in</small>
                 </summary>
                 <div className="stock-placement-fields">
+                  <p className="tool-detection wide">{stockDetectionText}</p>
                   <label className="wide"><span>Stock material</span><select value={config.stock.material} onChange={(event) => chooseStock(event.target.value)}>{STOCK_PRESETS.map((preset) => <option value={preset.material} key={preset.id}>{preset.name}</option>)}</select></label>
                   <label><span>Stock lower-left X (in)</span><input type="number" step="0.01" value={config.stock.x} onChange={(event) => updateStock({ x: updateNumber(event.target.value, config.stock.x) })} /></label>
                   <label><span>Stock lower-left Y (in)</span><input type="number" step="0.01" value={config.stock.y} onChange={(event) => updateStock({ y: updateNumber(event.target.value, config.stock.y) })} /></label>
@@ -306,6 +357,7 @@ export function ShopbotApp() {
           <div className="detected-settings">
             <span><small>Using stock</small><strong>{result ? `${result.effectiveStock.thickness.toFixed(3)}″ ${result.effectiveStock.material}` : config.stock.material}</strong></span>
             <span><small>Using cutter</small><strong>{effectiveCutterName}</strong></span>
+            <span><small>VirtualCut post</small><strong>{result?.metadata.virtualCutPostVersion ? `v${result.metadata.virtualCutPostVersion}` : result?.metadata.virtualCutMetadataPresent ? "Older / unversioned" : "Not detected"}</strong></span>
             <span><small>File speed</small><strong>{result?.stats.maxFeedIpm ? `${result.stats.maxFeedIpm.toFixed(0)} ipm @ ${(result.stats.rpm ?? 0).toLocaleString()} RPM` : "Not detected"}</strong></span>
             <span><small>Cut model</small><strong>{result ? `${result.stats.maxPassDepth.toFixed(3)}″ max pass · ${result.stats.maximumDepth.toFixed(3)}″ total` : "Not detected"}</strong></span>
           </div>

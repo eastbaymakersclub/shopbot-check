@@ -1,3 +1,5 @@
+import { VIRTUALCUT_POST_PATCH_VERSION } from "./fusion-post";
+
 export type Units = "in" | "mm";
 export type ZOrigin = "top" | "table";
 export type Severity = "error" | "warning" | "info" | "pass";
@@ -81,9 +83,19 @@ export interface ProgramBounds {
 export interface ProgramMetadata {
   units: Units;
   unitsSource: "header" | "unit-guard" | "machine-default";
+  virtualCutMetadataPresent: boolean;
+  virtualCutPostVersion: string | null;
   materialThickness: number | null;
   materialWidth: number | null;
   materialHeight: number | null;
+  stockMinX: number | null;
+  stockMinY: number | null;
+  stockMinZ: number | null;
+  stockMaxX: number | null;
+  stockMaxY: number | null;
+  stockMaxZ: number | null;
+  stockCoordinateSpace: "work" | null;
+  stockSource: "fusion" | "vectric" | "sbp" | null;
   safeZ: number | null;
   zOrigin: ZOrigin;
   toolName: string | null;
@@ -211,29 +223,34 @@ function firstNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-function virtualCutToolField(text: string, field: string): string | null {
+function virtualCutField(text: string, field: string): string | null {
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return text.match(new RegExp(`^\\s*'\\s*VirtualCut:\\s*${escaped}\\s*=\\s*(.+?)\\s*$`, "im"))?.[1]?.trim() ?? null;
+}
+
+function virtualCutNumber(text: string, field: string): number | null {
+  const value = Number.parseFloat(virtualCutField(text, field) ?? "");
+  return Number.isFinite(value) ? value : null;
 }
 
 export function detectToolFromSource(text: string): DetectedTool {
   const units = detectUnits(text)?.units ?? "in";
   const vectricName = text.match(/^\s*'\s*Tool Name\s*=\s*(.+)$/im)?.[1];
   const fusionName = text.match(/^\s*&ToolName\s*=\s*(.+)$/im)?.[1];
-  const structuredType = virtualCutToolField(text, "tool-type");
-  const structuredDescription = virtualCutToolField(text, "tool-description");
-  const structuredComment = virtualCutToolField(text, "tool-comment");
+  const structuredType = virtualCutField(text, "tool-type");
+  const structuredDescription = virtualCutField(text, "tool-description");
+  const structuredComment = virtualCutField(text, "tool-comment");
   const rawName = structuredDescription ?? structuredComment ?? fusionName ?? vectricName ?? structuredType ?? null;
   const name = rawName ? cleanToolName(rawName) : null;
   const normalized = [structuredType, structuredDescription, structuredComment, name].filter(Boolean).join(" ").toLowerCase();
   const number = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im)
     ?? firstNumber(text, /^\s*'\s*VirtualCut:\s*tool-number\s*=\s*(-?\d+(?:\.\d+)?)/im);
-  const structuredFlutes = virtualCutToolField(text, "tool-flutes");
+  const structuredFlutes = virtualCutField(text, "tool-flutes");
   const fluteText = structuredFlutes ?? normalized.match(/(\d+)\s*(?:-\s*)?flutes?\b/)?.[1] ?? null;
   const parsedFlutes = fluteText ? Number.parseInt(fluteText, 10) : null;
-  const structuredUnits = virtualCutToolField(text, "tool-units")?.toLowerCase() ?? units;
-  const structuredDiameter = Number.parseFloat(virtualCutToolField(text, "tool-diameter") ?? "");
-  const structuredFluteLength = Number.parseFloat(virtualCutToolField(text, "tool-flute-length") ?? "");
+  const structuredUnits = virtualCutField(text, "tool-units")?.toLowerCase() ?? units;
+  const structuredDiameter = Number.parseFloat(virtualCutField(text, "tool-diameter") ?? "");
+  const structuredFluteLength = Number.parseFloat(virtualCutField(text, "tool-flute-length") ?? "");
   const structuredScale = structuredUnits === "mm" ? 1 / 25.4 : 1;
   let geometry: CutterPreset["geometry"] | null = null;
   if (/ball(?:\s+nose|\s+end)?/.test(normalized)) geometry = "ball-nose";
@@ -247,38 +264,81 @@ export function detectToolFromSource(text: string): DetectedTool {
     geometry,
     flutes: Number.isFinite(parsedFlutes) ? parsedFlutes : null,
     fluteLength: Number.isFinite(structuredFluteLength) ? structuredFluteLength * structuredScale : null,
-    vendor: virtualCutToolField(text, "tool-vendor"),
-    productId: virtualCutToolField(text, "tool-product-id"),
+    vendor: virtualCutField(text, "tool-vendor"),
+    productId: virtualCutField(text, "tool-product-id"),
     source: structuredType || structuredDescription || structuredComment || Number.isFinite(structuredDiameter) || fusionName ? "fusion" : vectricName ? "vectric" : null,
   };
 }
 
-function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata {
+export function detectProgramMetadata(text: string, config: AnalysisConfig): ProgramMetadata {
   const unitsDetection = detectUnits(text);
   const units = unitsDetection?.units ?? config.machine.units;
   const unitScale = units === "mm" ? 1 / 25.4 : 1;
   const detectedTool = detectToolFromSource(text);
+  const virtualCutMetadataPresent = /^\s*'\s*VirtualCut:\s*/im.test(text);
+  const virtualCutPostVersion = virtualCutField(text, "post-version");
+  const structuredStockUnits = virtualCutField(text, "stock-units")?.toLowerCase() ?? units;
+  const stockUnitScale = structuredStockUnits === "mm" ? 1 / 25.4 : 1;
+  const stockMinXValue = virtualCutNumber(text, "stock-min-x");
+  const stockMinYValue = virtualCutNumber(text, "stock-min-y");
+  const stockMinZValue = virtualCutNumber(text, "stock-min-z");
+  const stockMaxXValue = virtualCutNumber(text, "stock-max-x");
+  const stockMaxYValue = virtualCutNumber(text, "stock-max-y");
+  const stockMaxZValue = virtualCutNumber(text, "stock-max-z");
+  const structuredWidth = virtualCutNumber(text, "stock-width")
+    ?? (stockMinXValue !== null && stockMaxXValue !== null ? stockMaxXValue - stockMinXValue : null);
+  const structuredHeight = virtualCutNumber(text, "stock-height")
+    ?? (stockMinYValue !== null && stockMaxYValue !== null ? stockMaxYValue - stockMinYValue : null);
+  const structuredThickness = virtualCutNumber(text, "stock-thickness")
+    ?? (stockMinZValue !== null && stockMaxZValue !== null ? stockMaxZValue - stockMinZValue : null);
+  const coordinateSpace = virtualCutField(text, "stock-coordinate-space")?.toLowerCase();
+  const structuredOrigin = virtualCutField(text, "stock-z-origin")?.toLowerCase() ?? "";
   const rawOrigin = text.match(/^\s*&PWZorigin\s*=\s*([^\r\n']+)/im)?.[1]?.trim() ?? "";
-  const zOrigin = rawOrigin ? (/table|bed/i.test(rawOrigin) ? "table" : "top") : config.stock.zOrigin;
-  const toolNumber = firstNumber(text, /^\s*&Tool\s*=\s*(-?\d+(?:\.\d+)?)/im);
-  const thickness = firstNumber(text, /^\s*&PWMaterial\s*=\s*(-?\d+(?:\.\d+)?)/im)
+  const zOriginText = structuredOrigin || rawOrigin;
+  const zOrigin = zOriginText ? (/table|bed/i.test(zOriginText) ? "table" : "top") : config.stock.zOrigin;
+  const legacyThickness = firstNumber(text, /^\s*&PWMaterial\s*=\s*(-?\d+(?:\.\d+)?)/im)
     ?? firstNumber(text, /Depth of material in Z\s*=\s*(-?\d+(?:\.\d+)?)/i);
-  const width = firstNumber(text, /Length of material in X\s*=\s*(-?\d+(?:\.\d+)?)/i);
-  const height = firstNumber(text, /Length of material in Y\s*=\s*(-?\d+(?:\.\d+)?)/i);
+  const legacyWidth = firstNumber(text, /Length of material in X\s*=\s*(-?\d+(?:\.\d+)?)/i);
+  const legacyHeight = firstNumber(text, /Length of material in Y\s*=\s*(-?\d+(?:\.\d+)?)/i);
+  const hasStructuredStock = [stockMinXValue, stockMinYValue, stockMinZValue, stockMaxXValue, stockMaxYValue, stockMaxZValue, structuredWidth, structuredHeight, structuredThickness]
+    .some((value) => value !== null);
+  const stockSource: ProgramMetadata["stockSource"] = hasStructuredStock
+    ? "fusion"
+    : legacyWidth !== null || legacyHeight !== null
+      ? "vectric"
+      : legacyThickness !== null
+        ? "sbp"
+        : null;
   const safeZ = firstNumber(text, /^\s*&PWSafeZ\s*=\s*(-?\d+(?:\.\d+)?)/im)
     ?? firstNumber(text, /Safe Z\s*=\s*(-?\d+(?:\.\d+)?)/i);
 
   return {
     units,
     unitsSource: unitsDetection?.source ?? "machine-default",
-    materialThickness: thickness === null ? null : thickness * unitScale,
-    materialWidth: width === null ? null : width * unitScale,
-    materialHeight: height === null ? null : height * unitScale,
+    virtualCutMetadataPresent,
+    virtualCutPostVersion,
+    materialThickness: structuredThickness === null
+      ? legacyThickness === null ? null : legacyThickness * unitScale
+      : structuredThickness * stockUnitScale,
+    materialWidth: structuredWidth === null
+      ? legacyWidth === null ? null : legacyWidth * unitScale
+      : structuredWidth * stockUnitScale,
+    materialHeight: structuredHeight === null
+      ? legacyHeight === null ? null : legacyHeight * unitScale
+      : structuredHeight * stockUnitScale,
+    stockMinX: stockMinXValue === null ? null : stockMinXValue * stockUnitScale,
+    stockMinY: stockMinYValue === null ? null : stockMinYValue * stockUnitScale,
+    stockMinZ: stockMinZValue === null ? null : stockMinZValue * stockUnitScale,
+    stockMaxX: stockMaxXValue === null ? null : stockMaxXValue * stockUnitScale,
+    stockMaxY: stockMaxYValue === null ? null : stockMaxYValue * stockUnitScale,
+    stockMaxZ: stockMaxZValue === null ? null : stockMaxZValue * stockUnitScale,
+    stockCoordinateSpace: coordinateSpace === "work" ? "work" : null,
+    stockSource,
     safeZ: safeZ === null ? null : safeZ * unitScale,
     zOrigin,
     toolName: detectedTool.name,
     toolDiameter: detectedTool.diameter,
-    toolNumber: toolNumber === null ? null : Math.round(toolNumber),
+    toolNumber: detectedTool.number,
     toolGeometry: detectedTool.geometry,
     toolFlutes: detectedTool.flutes,
     toolFluteLength: detectedTool.fluteLength,
@@ -286,6 +346,37 @@ function extractMetadata(text: string, config: AnalysisConfig): ProgramMetadata 
     toolProductId: detectedTool.productId,
     toolSource: detectedTool.source,
   };
+}
+
+export function stockConfigFromMetadata(
+  stock: StockConfig,
+  metadata: ProgramMetadata,
+  workOffset: AnalysisConfig["workOffset"],
+): StockConfig {
+  const workRelativeStock = metadata.stockCoordinateSpace === "work";
+  return {
+    ...stock,
+    thickness: metadata.materialThickness && metadata.materialThickness > 0 ? metadata.materialThickness : stock.thickness,
+    width: metadata.materialWidth && metadata.materialWidth > 0 ? metadata.materialWidth : stock.width,
+    height: metadata.materialHeight && metadata.materialHeight > 0 ? metadata.materialHeight : stock.height,
+    x: workRelativeStock && metadata.stockMinX !== null ? workOffset.x + metadata.stockMinX : stock.x,
+    y: workRelativeStock && metadata.stockMinY !== null ? workOffset.y + metadata.stockMinY : stock.y,
+    zOrigin: metadata.zOrigin,
+  };
+}
+
+function compareSemanticVersions(left: string, right: string): number | null {
+  const parse = (value: string) => {
+    const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)$/);
+    return match ? match.slice(1).map(Number) : null;
+  };
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (!leftParts || !rightParts) return null;
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) return leftParts[index] < rightParts[index] ? -1 : 1;
+  }
+  return 0;
 }
 
 function emptyBounds(): ProgramBounds {
@@ -335,15 +426,12 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   const sourceLines = text.replace(/\r\n?/g, "\n").split("\n");
   if (sourceLines.length > MAX_LINES) throw new Error(`Files over ${MAX_LINES.toLocaleString()} lines are not supported yet.`);
 
-  const metadata = extractMetadata(text, config);
+  const metadata = detectProgramMetadata(text, config);
   const scale = metadata.units === "mm" ? 1 / 25.4 : 1;
-  const effectiveStock: StockConfig = {
-    ...config.stock,
-    thickness: metadata.materialThickness ?? config.stock.thickness,
-    width: metadata.materialWidth ?? config.stock.width,
-    height: metadata.materialHeight ?? config.stock.height,
-    zOrigin: metadata.zOrigin,
-  };
+  // File metadata is copied into the editable stock configuration when a file
+  // is loaded. From that point on, Job setup is authoritative so members can
+  // correct or intentionally override Fusion's modeled stock.
+  const effectiveStock: StockConfig = { ...config.stock };
   const stockSurface = effectiveStock.zOrigin === "top" ? 0 : effectiveStock.thickness;
   const stockBottom = effectiveStock.zOrigin === "top" ? -effectiveStock.thickness : 0;
 
@@ -658,6 +746,31 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     y: { min: config.machine.limits.y.min - bounds.minY, max: config.machine.limits.y.max - bounds.maxY },
     stock: stockZeroRange,
   };
+
+  if (metadata.virtualCutMetadataPresent) {
+    if (!metadata.virtualCutPostVersion) {
+      issues.push(issue("warning", "setup", "virtualcut-post-outdated", "VirtualCut Fusion post is out of date", `This file contains VirtualCut metadata but no post version. The current post is ${VIRTUALCUT_POST_PATCH_VERSION}.`, {
+        recommendation: "Build the current EBMC edition in the Fusion integration section, install it in Fusion, and repost this job.",
+      }));
+    } else {
+      const versionComparison = compareSemanticVersions(metadata.virtualCutPostVersion, VIRTUALCUT_POST_PATCH_VERSION);
+      if (versionComparison === null) {
+        issues.push(issue("warning", "setup", "virtualcut-post-version-invalid", "VirtualCut Fusion post version is unrecognized", `The file reports post version “${metadata.virtualCutPostVersion}”; VirtualCut expects a semantic version such as ${VIRTUALCUT_POST_PATCH_VERSION}.`, {
+          recommendation: "Build the current EBMC edition in the Fusion integration section, install it in Fusion, and repost this job.",
+        }));
+      } else if (versionComparison < 0) {
+        issues.push(issue("warning", "setup", "virtualcut-post-outdated", "VirtualCut Fusion post is out of date", `This file was posted with VirtualCut ${metadata.virtualCutPostVersion}; the current post is ${VIRTUALCUT_POST_PATCH_VERSION}.`, {
+          recommendation: "Build the current EBMC edition in the Fusion integration section, install it in Fusion, and repost this job to include the latest validation metadata.",
+        }));
+      } else if (versionComparison > 0) {
+        issues.push(issue("info", "setup", "virtualcut-post-newer", "File uses a newer VirtualCut Fusion post", `This file reports VirtualCut ${metadata.virtualCutPostVersion}, while this analyzer knows ${VIRTUALCUT_POST_PATCH_VERSION}.`, {
+          recommendation: "Refresh VirtualCut before relying on fields added by the newer post.",
+        }));
+      } else {
+        issues.push(issue("pass", "setup", "virtualcut-post-current", "VirtualCut Fusion post is current", `This file was posted with VirtualCut ${metadata.virtualCutPostVersion}.`));
+      }
+    }
+  }
 
   if (metadata.unitsSource === "machine-default") {
     issues.push(issue("warning", "setup", "units-inferred", "File units are not declared", `Coordinates were interpreted as ${metadata.units === "in" ? "inches" : "millimeters"} from the machine profile.`, {

@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { VIRTUALCUT_POST_PATCH_VERSION } from "../lib/fusion-post";
 import { DEFAULT_CONFIG } from "../lib/presets";
-import { analyzeProgram, detectToolFromSource } from "../lib/sbp";
+import { analyzeProgram, detectProgramMetadata, detectToolFromSource, stockConfigFromMetadata } from "../lib/sbp";
 
 function fixture(name: string): string {
   return readFileSync(path.join(import.meta.dirname, "fixtures", name), "utf8");
@@ -68,6 +69,117 @@ describe("OpenSBP static analyzer", () => {
       productId: "ABC-123",
       source: "fusion",
     });
+  });
+
+  it("reads Fusion stock bounds and maps their work-relative origin into machine coordinates", () => {
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      `' VirtualCut: post-version=${VIRTUALCUT_POST_PATCH_VERSION}`,
+      "' VirtualCut: stock-shape=box",
+      "' VirtualCut: stock-units=in",
+      "' VirtualCut: stock-coordinate-space=work",
+      "' VirtualCut: stock-min-x=-0.25",
+      "' VirtualCut: stock-min-y=-0.125",
+      "' VirtualCut: stock-min-z=-0.75",
+      "' VirtualCut: stock-max-x=23.75",
+      "' VirtualCut: stock-max-y=47.875",
+      "' VirtualCut: stock-max-z=0",
+      "' VirtualCut: stock-width=24",
+      "' VirtualCut: stock-height=48",
+      "' VirtualCut: stock-thickness=0.75",
+      "' VirtualCut: stock-z-origin=top",
+    ].join("\n");
+    const metadata = detectProgramMetadata(source, DEFAULT_CONFIG);
+    const stock = stockConfigFromMetadata(DEFAULT_CONFIG.stock, metadata, { x: 10, y: 5 });
+
+    expect(metadata).toMatchObject({
+      virtualCutPostVersion: VIRTUALCUT_POST_PATCH_VERSION,
+      materialWidth: 24,
+      materialHeight: 48,
+      materialThickness: 0.75,
+      stockMinX: -0.25,
+      stockMinY: -0.125,
+      stockCoordinateSpace: "work",
+      stockSource: "fusion",
+      zOrigin: "top",
+    });
+    expect(stock).toMatchObject({ x: 9.75, y: 4.875, width: 24, height: 48, thickness: 0.75, zOrigin: "top" });
+  });
+
+  it("converts metric Fusion stock metadata into the inch-based UI", () => {
+    const source = [
+      "' ROUTER FILE IN MILLIMETERS",
+      `' VirtualCut: post-version=${VIRTUALCUT_POST_PATCH_VERSION}`,
+      "' VirtualCut: stock-units=mm",
+      "' VirtualCut: stock-coordinate-space=work",
+      "' VirtualCut: stock-min-x=-6.35",
+      "' VirtualCut: stock-min-y=12.7",
+      "' VirtualCut: stock-width=609.6",
+      "' VirtualCut: stock-height=1219.2",
+      "' VirtualCut: stock-thickness=19.05",
+    ].join("\n");
+    const metadata = detectProgramMetadata(source, DEFAULT_CONFIG);
+    const stock = stockConfigFromMetadata(DEFAULT_CONFIG.stock, metadata, { x: 10, y: 5 });
+
+    expect(stock.x).toBeCloseTo(9.75);
+    expect(stock.y).toBeCloseTo(5.5);
+    expect(stock.width).toBeCloseTo(24);
+    expect(stock.height).toBeCloseTo(48);
+    expect(stock.thickness).toBeCloseTo(0.75);
+  });
+
+  it("passes the current VirtualCut post and warns on older or unversioned VirtualCut files", () => {
+    const program = (metadataLines: string[]) => [
+      "' ROUTER FILE IN INCHES",
+      ...metadataLines,
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "C7",
+      "END",
+    ].join("\n");
+    const current = analyzeProgram("current.sbp", program([
+      `' VirtualCut: post-version=${VIRTUALCUT_POST_PATCH_VERSION}`,
+    ]), DEFAULT_CONFIG);
+    const older = analyzeProgram("older.sbp", program([
+      "' VirtualCut: post-version=1.0.0",
+    ]), DEFAULT_CONFIG);
+    const unversioned = analyzeProgram("unversioned.sbp", program([
+      "' VirtualCut: tool-diameter=0.5",
+    ]), DEFAULT_CONFIG);
+    const ordinary = analyzeProgram("ordinary.sbp", program([]), DEFAULT_CONFIG);
+
+    expect(current.issues.find((item) => item.id === "virtualcut-post-current")?.severity).toBe("pass");
+    expect(older.issues.find((item) => item.id === "virtualcut-post-outdated")?.severity).toBe("warning");
+    expect(unversioned.issues.find((item) => item.id === "virtualcut-post-outdated")?.severity).toBe("warning");
+    expect(ordinary.issues.some((item) => item.id.startsWith("virtualcut-post-"))).toBe(false);
+  });
+
+  it("keeps Job setup stock edits authoritative after metadata is loaded", () => {
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      `' VirtualCut: post-version=${VIRTUALCUT_POST_PATCH_VERSION}`,
+      "' VirtualCut: stock-units=in",
+      "' VirtualCut: stock-width=24",
+      "' VirtualCut: stock-height=12",
+      "' VirtualCut: stock-thickness=0.75",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 1",
+      "C7",
+      "END",
+    ].join("\n");
+    const result = analyzeProgram("overridden-stock.sbp", source, {
+      ...DEFAULT_CONFIG,
+      stock: { ...DEFAULT_CONFIG.stock, width: 30, height: 20, thickness: 1 },
+    });
+
+    expect(result.metadata).toMatchObject({ materialWidth: 24, materialHeight: 12, materialThickness: 0.75 });
+    expect(result.effectiveStock).toMatchObject({ width: 30, height: 20, thickness: 1 });
   });
 
   it("uses auto-filled Fusion flute count until Job setup overrides it", () => {
