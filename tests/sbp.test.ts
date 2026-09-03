@@ -111,17 +111,17 @@ describe("OpenSBP static analyzer", () => {
     expect(result.issues.find((item) => item.id === "rapid-in-stock")?.severity).toBe("error");
   });
 
-  it("uses table-base work zero to validate negative coordinates against machine and stock", () => {
+  it("uses machine-coordinate work zero to validate negative coordinates against machine and stock", () => {
     const source = fixture("unsafe-bounds.sbp");
     const result = analyzeProgram("unsafe-bounds.sbp", source, DEFAULT_CONFIG);
     const positioned = analyzeProgram("unsafe-bounds.sbp", source, {
       ...DEFAULT_CONFIG,
-      workOffset: { x: 1.25, y: 1 },
+      workOffset: { x: 0.75, y: 0.5 },
     });
 
     expect(result.bounds.minX).toBe(-1);
     expect(result.zeroRange.x.min).toBeCloseTo(0.5);
-    expect(result.zeroRange.stock?.x.min).toBeCloseTo(1.25);
+    expect(result.zeroRange.stock?.x.min).toBeCloseTo(0.75);
     expect(result.issues.find((item) => item.id === "current-zero-outside")?.severity).toBe("error");
     expect(result.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
     expect(result.issues.some((item) => item.id === "negative-coordinates")).toBe(false);
@@ -130,6 +130,25 @@ describe("OpenSBP static analyzer", () => {
     expect(positioned.issues.find((item) => item.id === "machine-envelope")?.severity).toBe("pass");
     expect(positioned.issues.find((item) => item.id === "negative-coordinates-positioned")?.severity).toBe("pass");
     expect(positioned.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
+  });
+
+  it("allows one cutter radius of stock overhang and respects stock position", () => {
+    const source = fixture("unsafe-bounds.sbp");
+    const atAllowance = analyzeProgram("unsafe-bounds.sbp", source, {
+      ...DEFAULT_CONFIG,
+      stock: { ...DEFAULT_CONFIG.stock, x: 10, y: 5 },
+      workOffset: { x: 10.75, y: 5.5 },
+    });
+    const beyondAllowance = analyzeProgram("unsafe-bounds.sbp", source, {
+      ...DEFAULT_CONFIG,
+      stock: { ...DEFAULT_CONFIG.stock, x: 10, y: 5 },
+      workOffset: { x: 10.74, y: 5.49 },
+    });
+
+    expect(atAllowance.zeroRange.stock?.x.min).toBeCloseTo(10.75);
+    expect(atAllowance.zeroRange.stock?.y.min).toBeCloseTo(5.5);
+    expect(atAllowance.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
+    expect(beyondAllowance.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
   });
 
   it("fails closed when a construct is unsupported", () => {

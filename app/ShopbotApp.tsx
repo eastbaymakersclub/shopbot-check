@@ -180,7 +180,10 @@ export function ShopbotApp() {
 
   const chooseStock = (material: string) => {
     const preset = STOCK_PRESETS.find((item) => item.material === material);
-    if (preset) setConfig((current) => ({ ...current, stock: preset }));
+    if (preset) setConfig((current) => ({
+      ...current,
+      stock: { ...preset, x: current.stock.x, y: current.stock.y },
+    }));
   };
 
   const updateStock = (patch: Partial<StockConfig>) => {
@@ -278,14 +281,25 @@ export function ShopbotApp() {
               <label><span>Diameter (in)</span><input type="number" min="0.01" step="0.001" value={config.cutter.diameter} onChange={(event) => updateCutter({ diameter: updateNumber(event.target.value, config.cutter.diameter) })} /></label>
               <label><span>Flutes</span><input type="number" min="1" max="8" step="1" value={config.cutter.flutes} onChange={(event) => updateCutter({ flutes: Math.max(1, Math.round(updateNumber(event.target.value, config.cutter.flutes))) })} /></label>
               <p className="tool-detection wide">{toolDetectionText}</p>
-              <label className="wide"><span>Stock material</span><select value={config.stock.material} onChange={(event) => chooseStock(event.target.value)}>{STOCK_PRESETS.map((preset) => <option value={preset.material} key={preset.id}>{preset.name}</option>)}</select></label>
-              <label><span>Thickness (in)</span><input type="number" min="0.01" step="0.001" value={config.stock.thickness} onChange={(event) => updateStock({ thickness: updateNumber(event.target.value, config.stock.thickness) })} /></label>
-              <label><span>Z zero</span><select value={config.stock.zOrigin} onChange={(event) => updateStock({ zOrigin: event.target.value as StockConfig["zOrigin"] })}><option value="top">Stock surface</option><option value="table">Table surface</option></select></label>
-              <label><span>Stock X (in)</span><input type="number" min="0.01" step="0.1" value={config.stock.width} onChange={(event) => updateStock({ width: updateNumber(event.target.value, config.stock.width) })} /></label>
-              <label><span>Stock Y (in)</span><input type="number" min="0.01" step="0.1" value={config.stock.height} onChange={(event) => updateStock({ height: updateNumber(event.target.value, config.stock.height) })} /></label>
-              <label><span>Table-base X zero (in)</span><input type="number" step="0.01" value={config.workOffset.x} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, x: updateNumber(event.target.value) } }))} /></label>
-              <label><span>Table-base Y zero (in)</span><input type="number" step="0.01" value={config.workOffset.y} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, y: updateNumber(event.target.value) } }))} /></label>
-              <p className="setup-help wide">Enter where the file’s X0, Y0 will sit in table coordinates. The stock model assumes its lower-left corner is at table X0, Y0.</p>
+              <label className="wide"><span>Z zero</span><select value={config.stock.zOrigin} onChange={(event) => updateStock({ zOrigin: event.target.value as StockConfig["zOrigin"] })}><option value="top">Stock surface</option><option value="table">Table surface</option></select></label>
+              <label><span>Machine X at work zero (in)</span><input type="number" step="0.01" value={config.workOffset.x} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, x: updateNumber(event.target.value) } }))} /></label>
+              <label><span>Machine Y at work zero (in)</span><input type="number" step="0.01" value={config.workOffset.y} onChange={(event) => setConfig((current) => ({ ...current, workOffset: { ...current.workOffset, y: updateNumber(event.target.value) } }))} /></label>
+              <p className="setup-help wide">Enter the machine coordinates where the file’s X0, Y0 will be set.</p>
+              <details className="stock-placement wide">
+                <summary>
+                  <span>Stock size & position</span>
+                  <small>{config.stock.material} · X {config.stock.x.toFixed(2)} · Y {config.stock.y.toFixed(2)} · {config.stock.width.toFixed(2)} × {config.stock.height.toFixed(2)} × {config.stock.thickness.toFixed(3)} in</small>
+                </summary>
+                <div className="stock-placement-fields">
+                  <label className="wide"><span>Stock material</span><select value={config.stock.material} onChange={(event) => chooseStock(event.target.value)}>{STOCK_PRESETS.map((preset) => <option value={preset.material} key={preset.id}>{preset.name}</option>)}</select></label>
+                  <label><span>Stock lower-left X (in)</span><input type="number" step="0.01" value={config.stock.x} onChange={(event) => updateStock({ x: updateNumber(event.target.value, config.stock.x) })} /></label>
+                  <label><span>Stock lower-left Y (in)</span><input type="number" step="0.01" value={config.stock.y} onChange={(event) => updateStock({ y: updateNumber(event.target.value, config.stock.y) })} /></label>
+                  <label><span>Width along X (in)</span><input type="number" min="0.01" step="0.1" value={config.stock.width} onChange={(event) => updateStock({ width: updateNumber(event.target.value, config.stock.width) })} /></label>
+                  <label><span>Height along Y (in)</span><input type="number" min="0.01" step="0.1" value={config.stock.height} onChange={(event) => updateStock({ height: updateNumber(event.target.value, config.stock.height) })} /></label>
+                  <label className="wide"><span>Thickness (in)</span><input type="number" min="0.01" step="0.001" value={config.stock.thickness} onChange={(event) => updateStock({ thickness: updateNumber(event.target.value, config.stock.thickness) })} /></label>
+                </div>
+                <p>Rectangular stock in machine coordinates. The stock check allows the tool center to overhang each edge by one cutter radius.</p>
+              </details>
             </div>
           </details>
 
@@ -315,14 +329,14 @@ export function ShopbotApp() {
               <div className="count-pills"><span className="error">{issueCounts.error}</span><span className="warning">{issueCounts.warning}</span></div>
             </div>
 
-            <div className="extent-heading"><strong>Program & machine envelope</strong><small>Machine positions include the entered table-base work zero.</small></div>
+            <div className="extent-heading"><strong>Program & machine envelope</strong><small>Machine positions include the entered work-zero location.</small></div>
             <div className="extent-grid">
               <div><small>File X extent</small><strong>{result ? formatExtent(result.bounds.minX, result.bounds.maxX) : "—"}</strong></div>
               <div><small>File Y extent</small><strong>{result ? formatExtent(result.bounds.minY, result.bounds.maxY) : "—"}</strong></div>
               <div><small>Machine X position</small><strong>{machineExtent ? formatExtent(machineExtent.x.min, machineExtent.x.max) : "—"}</strong></div>
               <div><small>Machine Y position</small><strong>{machineExtent ? formatExtent(machineExtent.y.min, machineExtent.y.max) : "—"}</strong></div>
               <div><small>Z extent</small><strong>{result ? formatExtent(result.bounds.minZ, result.bounds.maxZ) : "—"}</strong></div>
-              <div><small>Entered table-base zero</small><strong>X {config.workOffset.x.toFixed(2)} · Y {config.workOffset.y.toFixed(2)} in</strong></div>
+              <div><small>Entered work zero</small><strong>Machine X {config.workOffset.x.toFixed(2)} · Y {config.workOffset.y.toFixed(2)} in</strong></div>
               <div className={machineZeroOutside ? "origin-shift" : ""}>
                 <small>Machine-safe zero</small>
                 <strong>{result ? `X ${result.zeroRange.x.min.toFixed(2)}…${result.zeroRange.x.max.toFixed(2)} · Y ${result.zeroRange.y.min.toFixed(2)}…${result.zeroRange.y.max.toFixed(2)}` : "—"}</strong>

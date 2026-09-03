@@ -69,9 +69,9 @@ export function ToolpathViewer({ result, config, selectedLine, mode }: ToolpathV
       new THREE.MeshBasicMaterial({ color: 0xa9864f, transparent: true, opacity: 0.08, depthWrite: false }),
     );
     stockMesh.position.set(
-      stock.width / 2,
+      stock.x + stock.width / 2,
       stockSurface - stock.thickness / 2,
-      mapShopBotY(stock.height / 2),
+      mapShopBotY(stock.y + stock.height / 2),
     );
     scene.add(stockMesh);
     const stockEdges = new THREE.LineSegments(

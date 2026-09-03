@@ -6,7 +6,7 @@ describe("ShopBot viewer coordinates", () => {
     expect(mapShopBotPoint({ x: 1, y: 2, z: 3 }, { x: 0, y: 0 })).toEqual([1, 3, -2]);
   });
 
-  it("applies table-base work offsets before mapping Y into scene depth", () => {
+  it("applies machine-coordinate work offsets before mapping Y into scene depth", () => {
     expect(mapShopBotPoint({ x: 1, y: 2, z: 3 }, { x: 4, y: 5 })).toEqual([5, 3, -7]);
     expect(mapShopBotY(2, 5)).toBe(-7);
   });
