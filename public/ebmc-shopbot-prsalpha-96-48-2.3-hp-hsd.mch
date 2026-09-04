@@ -49,7 +49,7 @@
    },
    "general" : {
       "capabilities" : [ "milling" ],
-      "description" : "East Bay Makers Club 4 x 8 ft ShopBot PRSalpha. Manual tool change (controller backup ATC=0). 2.3 HP HSD spindle operating envelope: 9,000-18,000 RPM. Use the ShopBot OpenSBP post processor.",
+      "description" : "East Bay Makers Club 4 x 8 ft ShopBot PRSalpha. Manual tool change (controller backup ATC=0). 2.3 HP HSD spindle operating envelope: 9,000-18,000 RPM. Use the ShopBot OpenSBP post processor. No liquid coolant; use dust collection.",
       "minimumRevision" : 45805,
       "model" : "PRSalpha 96-48, 2.3 HP HSD (Manual Tool Change)",
       "vendor" : "ShopBot Tools"
@@ -430,7 +430,7 @@
                   "power" : 1.7151097055999998
                },
                "tool_station" : {
-                  "coolants" : [ "flood" ],
+                  "coolants" : null,
                   "max_tool_diameter" : 0,
                   "max_tool_length" : 0
                },
