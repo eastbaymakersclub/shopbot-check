@@ -254,9 +254,7 @@ export function ShopbotApp() {
     y: { min: result.bounds.minY + config.workOffset.y, max: result.bounds.maxY + config.workOffset.y },
   } : null;
   const machineZeroOutside = Boolean(result?.issues.some((item) => item.id === "current-zero-outside" || item.id === "path-too-large"));
-  const stockZeroOutside = Boolean(result?.issues.some((item) => (
-    (item.id === "stock-envelope" && item.severity !== "pass") || item.id === "stock-envelope-too-large"
-  )));
+  const stockZeroOutside = Boolean(result?.issues.some((item) => item.id === "stock-envelope" && item.severity !== "pass"));
 
   return (
     <main className="app-shell">

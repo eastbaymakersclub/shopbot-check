@@ -2,7 +2,7 @@
 
 Browser-based visualization and static preflight for ShopBot OpenSBP (`.sbp`) programs, built by [East Bay Makers Club](https://eastbaymakersclub.com/) for its PRSalpha 96 × 48.
 
-Drop in a part file to get an interactive 3D toolpath, machine- and stock-envelope checks, setup warnings, and a conservative feeds-and-speeds review. Files are analyzed locally in a Web Worker and never leave the browser.
+Drop in a part file to get an interactive 3D toolpath, machine-travel and stock-contact checks, setup warnings, and a conservative feeds-and-speeds review. Files are analyzed locally in a Web Worker and never leave the browser.
 
 > **Preflight aid, not a safety guarantee.** Fixtures, workholding, cutter condition, tool stick-out, machine state, and the physical setup still require an operator check.
 

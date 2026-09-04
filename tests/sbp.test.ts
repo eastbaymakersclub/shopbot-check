@@ -233,9 +233,9 @@ describe("OpenSBP static analyzer", () => {
 
     expect(result.bounds.minX).toBe(-1);
     expect(result.zeroRange.x.min).toBeCloseTo(0.5);
-    expect(result.zeroRange.stock?.x.min).toBeCloseTo(0.75);
+    expect(result.zeroRange.stock?.x.min).toBeLessThanOrEqual(0);
     expect(result.issues.find((item) => item.id === "current-zero-outside")?.severity).toBe("error");
-    expect(result.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
+    expect(result.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
     expect(result.issues.some((item) => item.id === "negative-coordinates")).toBe(false);
 
     expect(positioned.issues.some((item) => item.id === "current-zero-outside")).toBe(false);
@@ -244,38 +244,44 @@ describe("OpenSBP static analyzer", () => {
     expect(positioned.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
   });
 
-  it("allows one cutter radius of stock overhang and respects stock position", () => {
+  it("allows cutter-radius overhang and air lead-ins while detecting jobs that miss the stock", () => {
     const source = fixture("unsafe-bounds.sbp");
     const atAllowance = analyzeProgram("unsafe-bounds.sbp", source, {
       ...DEFAULT_CONFIG,
       stock: { ...DEFAULT_CONFIG.stock, x: 10, y: 5 },
       workOffset: { x: 10.75, y: 5.5 },
     });
-    const beyondAllowance = analyzeProgram("unsafe-bounds.sbp", source, {
+    const airLead = analyzeProgram("unsafe-bounds.sbp", source, {
       ...DEFAULT_CONFIG,
       stock: { ...DEFAULT_CONFIG.stock, x: 10, y: 5 },
       workOffset: { x: 10.74, y: 5.49 },
+    });
+    const missesStock = analyzeProgram("unsafe-bounds.sbp", source, {
+      ...DEFAULT_CONFIG,
+      stock: { ...DEFAULT_CONFIG.stock, x: 10, y: 5 },
+      workOffset: { x: 0, y: 0 },
     });
 
     expect(atAllowance.zeroRange.stock?.x.min).toBeCloseTo(10.75);
     expect(atAllowance.zeroRange.stock?.y.min).toBeCloseTo(5.5);
     expect(atAllowance.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
-    expect(beyondAllowance.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
+    expect(airLead.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
+    expect(missesStock.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
   });
 
-  it("ignores sub-thousandth rounding noise at the stock overhang allowance", () => {
-    const sourceForMaximumX = (maximumX: number) => [
+  it("uses a thousandth-inch tolerance when deciding whether a cutting sequence reaches stock", () => {
+    const sourceAtY = (y: number) => [
       "' ROUTER FILE IN INCHES",
       "SA",
       "TR, 10000",
       "C6",
       "MS, 1, 0.5",
       "JZ, 0.5",
-      "J2, -0.125, 0",
-      "M3, -0.125, 0, -0.1",
-      `M3, ${maximumX}, 0, -0.1`,
-      "M3, -0.125, 0, -0.1",
-      "M3, -0.125, 12.5977, -0.1",
+      `J2, 1, ${y}`,
+      `M3, 1, ${y}, -0.1`,
+      `M3, 2, ${y}, -0.1`,
+      `M3, 1, ${y}, -0.1`,
+      `M3, 1, ${y}, 0.5`,
       "C7",
       "END",
     ].join("\n");
@@ -284,11 +290,12 @@ describe("OpenSBP static analyzer", () => {
       cutter: { ...DEFAULT_CONFIG.cutter, diameter: 0.25 },
       stock: { ...DEFAULT_CONFIG.stock, width: 7.7731, height: 12.5977 },
     };
-    const roundedArc = analyzeProgram("rounded-arc.sbp", sourceForMaximumX(7.898119), config);
-    const genuineOverrun = analyzeProgram("genuine-overrun.sbp", sourceForMaximumX(7.9001), config);
+    const stockBoundary = config.stock.height + config.cutter.diameter / 2;
+    const roundedArc = analyzeProgram("rounded-arc.sbp", sourceAtY(stockBoundary + 0.000019), config);
+    const missesStock = analyzeProgram("misses-stock.sbp", sourceAtY(stockBoundary + 0.002), config);
 
     expect(roundedArc.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("pass");
-    expect(genuineOverrun.issues.find((item) => item.id === "stock-envelope-too-large")?.severity).toBe("warning");
+    expect(missesStock.issues.find((item) => item.id === "stock-envelope")?.severity).toBe("warning");
   });
 
   it("fails closed when a construct is unsupported", () => {
@@ -440,6 +447,40 @@ describe("OpenSBP static analyzer", () => {
 
     expect(result.stats.maximumDepth).toBeCloseTo(0.7187);
     expect(result.stats.maxPassDepth).toBeCloseTo(0.125);
+    expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
+  });
+
+  it("uses helical pitch instead of total bore depth for pass-depth analysis", () => {
+    const pitch = 0.0525;
+    const points = [[1, 0], [1, 1], [0, 1], [0, 0]];
+    const helix = Array.from({ length: 10 }, (_, revolution) => points.map(([x, y], pointIndex) => {
+      const depth = pitch * (revolution + (pointIndex + 1) / points.length);
+      return `M3, ${x}, ${y}, ${-depth}`;
+    })).flat();
+    const source = [
+      "' ROUTER FILE IN INCHES",
+      "SA",
+      "TR, 10000",
+      "C6",
+      "MS, 1, 0.5",
+      "JZ, 0.5",
+      "J2, 0, 0",
+      ...helix,
+      "M3, 0, 0, -0.525",
+      "M3, 0, 0.5, -0.525",
+      "M3, 0, 0.5, 0.5",
+      "C7",
+      "END",
+    ].join("\n");
+    const config = {
+      ...DEFAULT_CONFIG,
+      cutter: { ...DEFAULT_CONFIG.cutter, diameter: 0.25 },
+    };
+
+    const result = analyzeProgram("fusion-helical-bore.sbp", source, config);
+
+    expect(result.stats.maximumDepth).toBeCloseTo(0.525);
+    expect(result.stats.maxPassDepth).toBeCloseTo(pitch);
     expect(result.issues.some((item) => item.id.startsWith("pass-depth-"))).toBe(false);
   });
 });

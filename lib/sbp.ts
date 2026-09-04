@@ -402,6 +402,53 @@ function distance(from: Point3, to: Point3): number {
   return Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
 }
 
+function clipSegmentToRectangle(
+  from: Point3,
+  to: Point3,
+  x: AxisLimit,
+  y: AxisLimit,
+  range: AxisLimit = { min: 0, max: 1 },
+): [Point3, Point3] | null {
+  const delta = { x: to.x - from.x, y: to.y - from.y, z: to.z - from.z };
+  let minimum = range.min;
+  let maximum = range.max;
+  const edges: Array<[number, number]> = [
+    [-delta.x, from.x - x.min],
+    [delta.x, x.max - from.x],
+    [-delta.y, from.y - y.min],
+    [delta.y, y.max - from.y],
+  ];
+  for (const [direction, remaining] of edges) {
+    if (Math.abs(direction) <= EPSILON) {
+      if (remaining < -EPSILON) return null;
+      continue;
+    }
+    const amount = remaining / direction;
+    if (direction < 0) minimum = Math.max(minimum, amount);
+    else maximum = Math.min(maximum, amount);
+    if (minimum > maximum + EPSILON) return null;
+  }
+  const interpolate = (amount: number): Point3 => ({
+    x: from.x + delta.x * amount,
+    y: from.y + delta.y * amount,
+    z: from.z + delta.z * amount,
+  });
+  return [interpolate(minimum), interpolate(maximum)];
+}
+
+function belowSurfaceRange(from: Point3, to: Point3, stockSurface: number): AxisLimit | null {
+  if (from.z >= stockSurface - EPSILON && to.z >= stockSurface - EPSILON) return null;
+  let minimum = 0;
+  let maximum = 1;
+  const deltaZ = to.z - from.z;
+  if (from.z >= stockSurface - EPSILON && deltaZ < -EPSILON) {
+    minimum = Math.max(0, Math.min(1, (stockSurface - from.z) / deltaZ));
+  } else if (to.z >= stockSurface - EPSILON && deltaZ > EPSILON) {
+    maximum = Math.max(0, Math.min(1, (stockSurface - from.z) / deltaZ));
+  }
+  return minimum <= maximum + EPSILON ? { min: minimum, max: maximum } : null;
+}
+
 function numberArg(value: string | undefined, scale: number, fallback: number): number {
   if (value === undefined || value.trim() === "") return fallback;
   const parsed = Number.parseFloat(value);
@@ -468,6 +515,10 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   let cutCycleSawPlateau = false;
   let cutCyclePlateaus = new Map<string, number>();
   let cutCyclePlateauDepths: number[] = [];
+  let cutCyclePointDepths = new Map<string, number>();
+  let cutCycleRepeatedPointStep = 0;
+  let cutCycleRepeatedPointSamples = 0;
+  let cutCycleDirectPlungeDepth = 0;
 
   const cutPointKey = (point: Point3) => `${point.x.toFixed(4)},${point.y.toFixed(4)}`;
   const cutDepth = (point: Point3) => Math.max(0, stockSurface - point.z);
@@ -482,7 +533,9 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
           }
         }
       }
-      if (cutCyclePlateauDepths.length) {
+      if (cutCycleRepeatedPointSamples >= 4) {
+        maxPassDepth = Math.max(maxPassDepth, cutCycleRepeatedPointStep, cutCycleDirectPlungeDepth);
+      } else if (cutCyclePlateauDepths.length) {
         let priorDepth = previousDepth;
         for (const plateauDepth of cutCyclePlateauDepths) {
           if (plateauDepth > priorDepth + EPSILON) {
@@ -506,6 +559,10 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     cutCycleSawPlateau = false;
     cutCyclePlateaus = new Map<string, number>();
     cutCyclePlateauDepths = [];
+    cutCyclePointDepths = new Map<string, number>();
+    cutCycleRepeatedPointStep = 0;
+    cutCycleRepeatedPointSamples = 0;
+    cutCycleDirectPlungeDepth = 0;
   };
   const beginCutCycle = (from: Point3, to: Point3) => {
     let entry = from;
@@ -522,12 +579,30 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     cutCycleSawPlateau = false;
     cutCyclePlateaus = new Map<string, number>();
     cutCyclePlateauDepths = [];
+    cutCyclePointDepths = new Map<string, number>();
+    cutCycleRepeatedPointStep = 0;
+    cutCycleRepeatedPointSamples = 0;
+    cutCycleDirectPlungeDepth = 0;
     cutCycleActive = true;
   };
   const recordCutSegment = (from: Point3, to: Point3, horizontalDistance: number) => {
     if (!cutCycleActive) beginCutCycle(from, to);
+    const fromDepth = cutDepth(from);
+    const toDepth = cutDepth(to);
     const deepestDepth = Math.max(cutDepth(from), cutDepth(to));
     cutCycleDeepestDepth = Math.max(cutCycleDeepestDepth, deepestDepth);
+
+    if (horizontalDistance <= EPSILON && toDepth > fromDepth + EPSILON) {
+      cutCycleDirectPlungeDepth = Math.max(cutCycleDirectPlungeDepth, toDepth - fromDepth);
+    } else if (horizontalDistance > EPSILON && toDepth > EPSILON) {
+      const key = cutPointKey(to);
+      const previousDepth = cutCyclePointDepths.get(key);
+      if (previousDepth !== undefined && toDepth > previousDepth + EPSILON) {
+        cutCycleRepeatedPointStep = Math.max(cutCycleRepeatedPointStep, toDepth - previousDepth);
+        cutCycleRepeatedPointSamples += 1;
+      }
+      cutCyclePointDepths.set(key, Math.max(previousDepth ?? 0, toDepth));
+    }
 
     // Fusion and Vectric ramps settle onto a constant-Z cutting plateau for
     // each pass. Measuring the change between those plateaus avoids treating
@@ -752,14 +827,60 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
   const cutterDiameter = config.cutter.diameter;
   const cutterFlutes = config.cutter.flutes;
   const cutterRadius = cutterDiameter / 2;
-  const stockZeroRange = cutBounds ? {
+  const expandedStockInWorkCoordinates = {
     x: {
-      min: effectiveStock.x - cutterRadius - cutBounds.minX,
-      max: effectiveStock.x + effectiveStock.width + cutterRadius - cutBounds.maxX,
+      min: effectiveStock.x - config.workOffset.x - cutterRadius - STOCK_ENVELOPE_TOLERANCE_INCHES,
+      max: effectiveStock.x - config.workOffset.x + effectiveStock.width + cutterRadius + STOCK_ENVELOPE_TOLERANCE_INCHES,
     },
     y: {
-      min: effectiveStock.y - cutterRadius - cutBounds.minY,
-      max: effectiveStock.y + effectiveStock.height + cutterRadius - cutBounds.maxY,
+      min: effectiveStock.y - config.workOffset.y - cutterRadius - STOCK_ENVELOPE_TOLERANCE_INCHES,
+      max: effectiveStock.y - config.workOffset.y + effectiveStock.height + cutterRadius + STOCK_ENVELOPE_TOLERANCE_INCHES,
+    },
+  };
+  const stockContactBoundsAccumulator = emptyBounds();
+  let stockCutCycleActive = false;
+  let stockCutCycleTouchesStock = false;
+  let stockCutCycleCount = 0;
+  let stockMissedCutCycleCount = 0;
+  const finishStockCutCycle = () => {
+    if (!stockCutCycleActive) return;
+    stockCutCycleCount += 1;
+    if (!stockCutCycleTouchesStock) stockMissedCutCycleCount += 1;
+    stockCutCycleActive = false;
+    stockCutCycleTouchesStock = false;
+  };
+  for (const segment of segments) {
+    if (segment.kind === "move" && segment.engaged) {
+      stockCutCycleActive = true;
+      const engagedRange = belowSurfaceRange(segment.from, segment.to, stockSurface);
+      const clipped = engagedRange ? clipSegmentToRectangle(
+        segment.from,
+        segment.to,
+        expandedStockInWorkCoordinates.x,
+        expandedStockInWorkCoordinates.y,
+        engagedRange,
+      ) : null;
+      if (clipped) {
+        stockCutCycleTouchesStock = true;
+        addPoint(stockContactBoundsAccumulator, clipped[0]);
+        addPoint(stockContactBoundsAccumulator, clipped[1]);
+      }
+    }
+    if (stockCutCycleActive && segment.to.z >= stockSurface - EPSILON) finishStockCutCycle();
+  }
+  finishStockCutCycle();
+  const stockContactBounds = Number.isFinite(stockContactBoundsAccumulator.minX)
+    ? finiteBounds(stockContactBoundsAccumulator)
+    : null;
+  const stockValidationBounds = stockContactBounds ?? cutBounds;
+  const stockZeroRange = stockValidationBounds ? {
+    x: {
+      min: effectiveStock.x - cutterRadius - STOCK_ENVELOPE_TOLERANCE_INCHES - stockValidationBounds.minX,
+      max: effectiveStock.x + effectiveStock.width + cutterRadius + STOCK_ENVELOPE_TOLERANCE_INCHES - stockValidationBounds.maxX,
+    },
+    y: {
+      min: effectiveStock.y - cutterRadius - STOCK_ENVELOPE_TOLERANCE_INCHES - stockValidationBounds.minY,
+      max: effectiveStock.y + effectiveStock.height + cutterRadius + STOCK_ENVELOPE_TOLERANCE_INCHES - stockValidationBounds.maxY,
     },
   } : null;
   const zeroRange = {
@@ -862,30 +983,12 @@ export function analyzeProgram(filename: string, text: string, config: AnalysisC
     issues.push(issue("pass", "bounds", "negative-coordinates-positioned", "Negative coordinates are safely positioned", `The file reaches X ${formatInches(bounds.minX)} and Y ${formatInches(bounds.minY)} relative to work zero, but the entered machine position keeps those moves inside machine travel.`));
   }
   if (cutBounds && stockZeroRange) {
-    const cutCenterMinX = cutBounds.minX + config.workOffset.x;
-    const cutCenterMaxX = cutBounds.maxX + config.workOffset.x;
-    const cutCenterMinY = cutBounds.minY + config.workOffset.y;
-    const cutCenterMaxY = cutBounds.maxY + config.workOffset.y;
-    const allowedMinX = effectiveStock.x - cutterRadius;
-    const allowedMaxX = effectiveStock.x + effectiveStock.width + cutterRadius;
-    const allowedMinY = effectiveStock.y - cutterRadius;
-    const allowedMaxY = effectiveStock.y + effectiveStock.height + cutterRadius;
-    const stockOutside = cutCenterMinX < allowedMinX - STOCK_ENVELOPE_TOLERANCE_INCHES
-      || cutCenterMinY < allowedMinY - STOCK_ENVELOPE_TOLERANCE_INCHES
-      || cutCenterMaxX > allowedMaxX + STOCK_ENVELOPE_TOLERANCE_INCHES
-      || cutCenterMaxY > allowedMaxY + STOCK_ENVELOPE_TOLERANCE_INCHES;
-    const fitsStock = stockZeroRange.x.min <= stockZeroRange.x.max + STOCK_ENVELOPE_TOLERANCE_INCHES
-      && stockZeroRange.y.min <= stockZeroRange.y.max + STOCK_ENVELOPE_TOLERANCE_INCHES;
-    if (!fitsStock) {
-      issues.push(issue("warning", "bounds", "stock-envelope-too-large", "Cutting path is larger than the stock allowance", `No work-zero position can fit the tool centerline within the ${formatInches(effectiveStock.width)} × ${formatInches(effectiveStock.height)} stock plus ${formatInches(cutterRadius)} of cutter-radius overhang on each edge.`, {
-        recommendation: "Confirm the stock position and dimensions, cutter diameter, and whether the cut intentionally exceeds the stock by more than one cutter radius.",
-      }));
-    } else if (stockOutside) {
-      issues.push(issue("warning", "bounds", "stock-envelope", "Cutting path exceeds the stock overhang allowance", `The tool center reaches machine X ${formatInches(cutCenterMinX)}…${formatInches(cutCenterMaxX)} and Y ${formatInches(cutCenterMinY)}…${formatInches(cutCenterMaxY)}. The modeled stock plus ${formatInches(cutterRadius)} of cutter-radius overhang allows X ${formatInches(allowedMinX)}…${formatInches(allowedMaxX)} and Y ${formatInches(allowedMinY)}…${formatInches(allowedMaxY)}.`, {
-        recommendation: `Place work zero at machine X ${formatInches(stockZeroRange.x.min)}…${formatInches(stockZeroRange.x.max)} and Y ${formatInches(stockZeroRange.y.min)}…${formatInches(stockZeroRange.y.max)}, or correct the stock rectangle.`,
+    if (stockMissedCutCycleCount > 0) {
+      issues.push(issue("warning", "bounds", "stock-envelope", `${stockMissedCutCycleCount} cutting ${stockMissedCutCycleCount === 1 ? "sequence misses" : "sequences miss"} the modeled stock`, `${stockMissedCutCycleCount} of ${stockCutCycleCount} continuous below-surface cutting sequences stay farther than the cutter radius from the stock in XY, so the cutting edge never reaches the modeled material.`, {
+        recommendation: "Confirm the machine position of work zero and the modeled stock rectangle. Intentional air-cut sequences require manual review.",
       }));
     } else {
-      issues.push(issue("pass", "bounds", "stock-envelope", "Cutting path stays within the stock allowance", `The tool center stays within the modeled stock or no more than ${formatInches(cutterRadius)}—half the cutter diameter—beyond an edge.`));
+      issues.push(issue("pass", "bounds", "stock-envelope", "Cutting path reaches the modeled stock as expected", `All below-surface cutting sequences intersect the modeled stock or its ${formatInches(cutterRadius)} cutter-radius boundary. Air lead-ins and lead-outs are ignored.`));
     }
   }
   const zTravel = bounds.maxZ - bounds.minZ;
