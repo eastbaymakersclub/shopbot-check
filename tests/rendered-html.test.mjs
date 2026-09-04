@@ -26,7 +26,9 @@ test("server-renders the ShopBot Check shell", async () => {
   assert.match(html, /Machine X at work zero \(in\)/);
   assert.match(html, /Stock size &amp; position/);
   assert.match(html, /Stock lower-left X \(in\)/);
-  assert.match(html, /Build the EBMC edition/);
+  assert.match(html, /Download VirtualCut post/);
+  assert.doesNotMatch(html, /Download Autodesk’s ShopBot post/);
+  assert.doesNotMatch(html, /accept="\.cps"/);
   assert.match(html, /Download EBMC tool library/);
   assert.match(html, /href="\/ebmc-tools-2026-09-03\.tools"/);
   assert.match(html, /Download EBMC machine definition/);

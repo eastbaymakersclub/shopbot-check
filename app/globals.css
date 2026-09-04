@@ -180,13 +180,12 @@ button { color: inherit; }
 .fusion-tool-library > strong { color: var(--paper); font-size: 11px; }
 .fusion-resource-label { margin: 0; color: var(--green); font: 700 8px var(--font-geist-mono), monospace; letter-spacing: .08em; text-transform: uppercase; }
 .fusion-post-divider { height: 1px; margin: 14px 0; background: rgba(104,113,109,.28); }
-.fusion-post-actions ol { margin: 0; padding-left: 22px; display: grid; gap: 9px; color: var(--steel); font: 9px var(--font-geist-mono), monospace; }
-.fusion-post-actions li { padding-left: 4px; }
 .fusion-post-actions a, .post-build-button { min-height: 34px; display: flex; align-items: center; justify-content: center; padding: 8px 11px; border: 1px solid rgba(101,196,228,.45); color: var(--paper); background: rgba(101,196,228,.08); border-radius: 7px; text-decoration: none; cursor: pointer; transition: .18s ease; }
 .fusion-post-actions a:hover, .post-build-button:hover { border-color: var(--blue); background: rgba(101,196,228,.14); transform: translateY(-1px); }
-.post-build-button { border-color: rgba(79,208,99,.5); background: rgba(79,208,99,.08); }
-.post-build-button input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.post-build-button { width: 100%; margin-top: 8px; border-color: rgba(79,208,99,.5); background: rgba(79,208,99,.08); font: 600 10px var(--font-geist-mono), monospace; }
+.post-build-button:disabled { opacity: .65; cursor: progress; transform: none; }
 .post-build-message { min-height: 30px; margin: 11px 0 0; padding: 8px 9px; color: var(--muted); background: rgba(104,113,109,.08); border-radius: 6px; font-size: 9px; line-height: 1.45; }
+.post-build-message.loading { color: var(--blue); background: rgba(101,196,228,.08); }
 .post-build-message.success { color: var(--green); background: rgba(79,208,99,.08); }
 .post-build-message.error { color: #ff8a86; background: rgba(255,53,49,.08); }
 .post-install-note { margin: 8px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }

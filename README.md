@@ -57,7 +57,7 @@ The public app includes a browser-only builder for the VirtualCut edition of Aut
 
 The Fusion setup panel also provides EBMC's shared cutter library and the machine definition for the club's ShopBot PRSalpha 96-48 with its 2.3 HP HSD spindle. Import the `.tools` file into Fusion's local Tool Library and the `.mch` file into its local Machine Library.
 
-Autodesk's original post is not stored or redistributed by this project. Members download it directly from Autodesk, then choose that local `.cps` file in VirtualCut. The patch and generated download remain in the browser. Review Autodesk's terms and carefully test any customized post before using it on a machine.
+Autodesk's original post is not stored by this project. Because Autodesk's download endpoint does not allow a direct cross-origin browser fetch, a no-store same-origin route relays the current official source on demand. The browser validates and patches that source, then creates the customized download locally. Review Autodesk's terms and carefully test any customized post before using it on a machine.
 
 ## Architecture
 

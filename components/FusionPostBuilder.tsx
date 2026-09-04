@@ -1,40 +1,39 @@
 "use client";
 
-import { useState, type ChangeEvent } from "react";
+import { useState } from "react";
 import {
-  AUTODESK_SHOPBOT_POST_URL,
   buildVirtualCutShopbotPost,
   VIRTUALCUT_POST_FILENAME,
   VIRTUALCUT_POST_PATCH_VERSION,
 } from "../lib/fusion-post";
 
 const MAX_POST_BYTES = 2 * 1024 * 1024;
+const AUTODESK_POST_SOURCE_URL = "/api/fusion-post";
 const EBMC_TOOL_LIBRARY_URL = "/ebmc-tools-2026-09-03.tools";
 const EBMC_TOOL_LIBRARY_FILENAME = "EBMC Tools - 2026-09-03.tools";
 const EBMC_MACHINE_DEFINITION_URL = "/ebmc-shopbot-prsalpha-96-48-2.3-hp-hsd.mch";
 const EBMC_MACHINE_DEFINITION_FILENAME = "ShopBot Tools PRSalpha 96-48, 2.3 HP HSD (Manual Tool Change).mch";
 
 export function FusionPostBuilder() {
-  const [message, setMessage] = useState("Choose Autodesk’s downloaded shopbot.cps to build the VirtualCut edition.");
-  const [messageType, setMessageType] = useState<"ready" | "success" | "error">("ready");
+  const [message, setMessage] = useState("Downloads Autodesk’s current ShopBot post and applies the VirtualCut patch in your browser.");
+  const [messageType, setMessageType] = useState<"ready" | "loading" | "success" | "error">("ready");
+  const [isBuilding, setIsBuilding] = useState(false);
 
-  const buildPost = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".cps")) {
-      setMessageType("error");
-      setMessage("Choose Autodesk’s ShopBot post file ending in .cps.");
-      return;
-    }
-    if (file.size > MAX_POST_BYTES) {
-      setMessageType("error");
-      setMessage("That post is unexpectedly large and was not processed.");
-      return;
-    }
-
+  const buildPost = async () => {
+    setIsBuilding(true);
+    setMessageType("loading");
+    setMessage("Getting Autodesk’s current ShopBot post…");
     try {
-      const built = buildVirtualCutShopbotPost(await file.text());
+      const response = await fetch(AUTODESK_POST_SOURCE_URL, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error("Autodesk’s ShopBot post could not be reached. Please try again in a moment.");
+      }
+      const source = await response.text();
+      if (new Blob([source]).size > MAX_POST_BYTES) {
+        throw new Error("Autodesk’s ShopBot post was unexpectedly large and was not processed.");
+      }
+
+      const built = buildVirtualCutShopbotPost(source);
       const objectUrl = URL.createObjectURL(new Blob([built.source], { type: "text/plain;charset=utf-8" }));
       const download = document.createElement("a");
       download.href = objectUrl;
@@ -46,6 +45,8 @@ export function FusionPostBuilder() {
     } catch (caught) {
       setMessageType("error");
       setMessage(caught instanceof Error ? caught.message : "The post could not be patched safely.");
+    } finally {
+      setIsBuilding(false);
     }
   };
 
@@ -81,18 +82,12 @@ export function FusionPostBuilder() {
         </div>
         <div className="fusion-post-divider" aria-hidden="true" />
         <p className="fusion-resource-label">VirtualCut post</p>
-        <ol>
-          <li><a href={AUTODESK_SHOPBOT_POST_URL}>Download Autodesk’s ShopBot post ↗</a></li>
-          <li>
-            <label className="post-build-button">
-              Build the EBMC edition
-              <input type="file" accept=".cps" onChange={buildPost} />
-            </label>
-          </li>
-        </ol>
+        <button className="post-build-button" type="button" onClick={() => void buildPost()} disabled={isBuilding}>
+          {isBuilding ? "Preparing VirtualCut post…" : "Download VirtualCut post"}
+        </button>
         <p className={`post-build-message ${messageType}`} role="status">{message}</p>
         <p className="post-install-note"><strong>Install:</strong> In Fusion’s Post Library, choose Local, then Import and select {VIRTUALCUT_POST_FILENAME}.</p>
-        <small>Patch {VIRTUALCUT_POST_PATCH_VERSION} runs entirely in your browser. Autodesk’s source is never uploaded or redistributed by VirtualCut.</small>
+        <small>Patch {VIRTUALCUT_POST_PATCH_VERSION}. Autodesk’s current source is fetched on demand and never stored; VirtualCut applies the patch and creates the download in your browser.</small>
       </div>
     </section>
   );
