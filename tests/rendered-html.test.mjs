@@ -28,7 +28,9 @@ test("server-renders the ShopBot Check shell", async () => {
   assert.match(html, /Stock lower-left X \(in\)/);
   assert.match(html, /Build the EBMC edition/);
   assert.match(html, /Download EBMC tool library/);
-  assert.match(html, /href="\/ebmc-tools-2026-09-01\.tools"/);
+  assert.match(html, /href="\/ebmc-tools-2026-09-03\.tools"/);
+  assert.match(html, /Download EBMC machine definition/);
+  assert.match(html, /href="\/ebmc-shopbot-prsalpha-96-48-2\.3-hp-hsd\.mch"/);
   assert.doesNotMatch(html, /synthetic demo/i);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
 });

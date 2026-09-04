@@ -9,8 +9,10 @@ import {
 } from "../lib/fusion-post";
 
 const MAX_POST_BYTES = 2 * 1024 * 1024;
-const EBMC_TOOL_LIBRARY_URL = "/ebmc-tools-2026-09-01.tools";
-const EBMC_TOOL_LIBRARY_FILENAME = "EBMC Tools - 2026-09-01.tools";
+const EBMC_TOOL_LIBRARY_URL = "/ebmc-tools-2026-09-03.tools";
+const EBMC_TOOL_LIBRARY_FILENAME = "EBMC Tools - 2026-09-03.tools";
+const EBMC_MACHINE_DEFINITION_URL = "/ebmc-shopbot-prsalpha-96-48-2.3-hp-hsd.mch";
+const EBMC_MACHINE_DEFINITION_FILENAME = "ShopBot Tools PRSalpha 96-48, 2.3 HP HSD (Manual Tool Change).mch";
 
 export function FusionPostBuilder() {
   const [message, setMessage] = useState("Choose Autodesk’s downloaded shopbot.cps to build the VirtualCut edition.");
@@ -52,7 +54,7 @@ export function FusionPostBuilder() {
       <div className="fusion-post-copy">
         <p className="eyebrow">Fusion integration</p>
         <h2>Set up Fusion for EBMC and VirtualCut</h2>
-        <p>Start with EBMC’s shared cutter library, then use the EBMC post patch to put exact tool data, modeled stock bounds, and the post version in every ShopBot file. VirtualCut reads the added comments automatically; ShopBot ignores them.</p>
+        <p>Start with EBMC’s shared cutter library and PRSalpha machine definition, then use the EBMC post patch to put exact tool data, modeled stock bounds, and the post version in every ShopBot file. VirtualCut reads the added comments automatically; ShopBot ignores them.</p>
         <div className="fusion-post-fields" aria-label="Embedded Fusion fields">
           <span>Diameter</span><span>Flutes</span><span>Geometry</span><span>Vendor / ID</span><span>Stock size / offset</span><span>Post version</span>
         </div>
@@ -65,7 +67,17 @@ export function FusionPostBuilder() {
             Download EBMC tool library
           </a>
           <p className="post-install-note"><strong>Install:</strong> In Fusion’s Tool Library, select Local, choose Import Tool Library, and open the downloaded <code>.tools</code> file.</p>
-          <small>Updated September 1, 2026 · Fusion tool library</small>
+          <small>Updated September 3, 2026 · 24 EBMC tools</small>
+        </div>
+        <div className="fusion-post-divider" aria-hidden="true" />
+        <div className="fusion-tool-library">
+          <p className="fusion-resource-label">EBMC machine definition</p>
+          <strong>ShopBot PRSalpha 96-48 · 2.3 HP HSD</strong>
+          <a href={EBMC_MACHINE_DEFINITION_URL} download={EBMC_MACHINE_DEFINITION_FILENAME}>
+            Download EBMC machine definition
+          </a>
+          <p className="post-install-note"><strong>Install:</strong> In Fusion’s Machine Library, select Local, choose Import, and open the downloaded <code>.mch</code> file.</p>
+          <small>Manual tool change · 9,000–18,000 RPM spindle · 4 × 8 ft table</small>
         </div>
         <div className="fusion-post-divider" aria-hidden="true" />
         <p className="fusion-resource-label">VirtualCut post</p>

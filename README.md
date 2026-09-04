@@ -55,6 +55,8 @@ SBP_SAMPLE_DIR=/absolute/path/to/sbp-files npm test
 
 The public app includes a browser-only builder for the VirtualCut edition of Autodesk's ShopBot OpenSBP post. It adds inert comments for tool number, diameter, units, flute count, type, flute length, description, comment, vendor, and product ID at each tool change. It also records the modeled rectangular stock bounding box, stock units, work-relative position, Z-zero convention, and VirtualCut post version once per file. The analyzer loads those values into the editable Job setup and warns when a file identifies an older or unversioned VirtualCut post.
 
+The Fusion setup panel also provides EBMC's shared cutter library and the machine definition for the club's ShopBot PRSalpha 96-48 with its 2.3 HP HSD spindle. Import the `.tools` file into Fusion's local Tool Library and the `.mch` file into its local Machine Library.
+
 Autodesk's original post is not stored or redistributed by this project. Members download it directly from Autodesk, then choose that local `.cps` file in VirtualCut. The patch and generated download remain in the browser. Review Autodesk's terms and carefully test any customized post before using it on a machine.
 
 ## Architecture
